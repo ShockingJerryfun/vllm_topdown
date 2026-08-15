@@ -2,95 +2,58 @@
 
 set -Eeuo pipefail
 
-EVENT_LABEL=${1:?usage: run_one.sh EVENT_LABEL EVENT_CODES}
-EVENT_CODES=${2:?usage: run_one.sh EVENT_LABEL EVENT_CODES}
-
-RUN_ROOT=${RUN_ROOT:-/home/fj/vllm_026_v2_kperf_runs}
-MODEL=${MODEL:?set MODEL to the Qwen2.5-1.5B-Instruct directory}
-SERVED_MODEL=${SERVED_MODEL:-qwen25-1_5b}
+LABEL=${1:?usage: run_one.sh LABEL [EVENT_CODES]}
+CODES=${2-}
+RUN_ROOT=${RUN_ROOT:?set RUN_ROOT}
+MODEL=${MODEL:?set MODEL}
 VLLM_BIN=${VLLM_BIN:-vllm}
-VLLM_PYTHONPATH=${VLLM_PYTHONPATH:?set VLLM_PYTHONPATH to the mounted source root}
+VLLM_PYTHONPATH=${VLLM_PYTHONPATH:?set VLLM_PYTHONPATH}
+SERVED_MODEL=${SERVED_MODEL:-qwen25-1_5b}
 CPU_ID=${CPU_ID:-250}
 GPU_ID=${GPU_ID:-0}
 PORT=${PORT:-18026}
-
-RUN_DIR="$RUN_ROOT/raw/$EVENT_LABEL"
-if [[ -e "$RUN_DIR" ]]; then
-    printf 'Run directory already exists: %s\n' "$RUN_DIR" >&2
-    exit 3
-fi
-install -d -m 755 "$RUN_DIR"
-
-SERVER_LOG="$RUN_DIR/server.log"
-BENCH_LOG="$RUN_DIR/benchmark.log"
-MEASUREMENT_LOG="$RUN_DIR/measurement.log"
+RUN_DIR="$RUN_ROOT/$LABEL"
 SERVICE_PID=""
+PERF_PID=""
 
-cleanup_service() {
-    if [[ -z "$SERVICE_PID" ]]; then
-        return
+cleanup() {
+    if [[ -n "$PERF_PID" ]] && kill -0 "$PERF_PID" 2>/dev/null; then
+        kill -INT "$PERF_PID" 2>/dev/null || true
+        wait "$PERF_PID" 2>/dev/null || true
     fi
-    if kill -0 -- "-$SERVICE_PID" 2>/dev/null; then
+    if [[ -n "$SERVICE_PID" ]] && kill -0 -- "-$SERVICE_PID" 2>/dev/null; then
         kill -TERM -- "-$SERVICE_PID" 2>/dev/null || true
         for _ in $(seq 1 30); do
-            if ! kill -0 -- "-$SERVICE_PID" 2>/dev/null; then
-                break
-            fi
+            kill -0 -- "-$SERVICE_PID" 2>/dev/null || break
             sleep 1
         done
-    fi
-    if kill -0 -- "-$SERVICE_PID" 2>/dev/null; then
         kill -KILL -- "-$SERVICE_PID" 2>/dev/null || true
+        wait "$SERVICE_PID" 2>/dev/null || true
     fi
-    wait "$SERVICE_PID" 2>/dev/null || true
 }
 
-trap cleanup_service EXIT INT TERM
+trap cleanup EXIT INT TERM
 
-if ss -ltn | grep -qE ":${PORT}[[:space:]]"; then
-    printf 'Port %s is already in use\n' "$PORT" >&2
-    exit 4
-fi
-
-nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu \
-    --format=csv,noheader > "$RUN_DIR/gpu_before.txt"
-nvidia-smi --query-compute-apps=pid,process_name,used_memory \
-    --format=csv,noheader > "$RUN_DIR/gpu_processes_before.txt" || true
+[[ ! -e "$RUN_DIR" ]] || { printf 'Exists: %s\n' "$RUN_DIR" >&2; exit 2; }
+ss -ltn | grep -qE ":${PORT}[[:space:]]" && { printf 'Port in use: %s\n' "$PORT" >&2; exit 3; }
+install -d -m 755 "$RUN_DIR"
 
 {
     printf 'version=0.26.0\n'
-    printf 'model_runner=v2\n'
-    printf 'event_label=%s\n' "$EVENT_LABEL"
-    printf 'event_codes=%s\n' "$EVENT_CODES"
-    printf 'kperf_time_mode=inner\n'
-    printf 'cpu_id=%s\n' "$CPU_ID"
-    printf 'gpu_id=%s\n' "$GPU_ID"
-    printf 'port=%s\n' "$PORT"
+    printf 'label=%s\n' "$LABEL"
+    printf 'events=%s\n' "$CODES"
     printf 'model=%s\n' "$MODEL"
-    printf 'served_model=%s\n' "$SERVED_MODEL"
-    printf 'vllm_bin=%s\n' "$VLLM_BIN"
-    printf 'vllm_pythonpath=%s\n' "$VLLM_PYTHONPATH"
-    printf 'input_tokens=7000\n'
-    printf 'output_tokens=100\n'
-    printf 'num_prompts=1\n'
-    printf 'num_warmups=0\n'
-    printf 'max_concurrency=1\n'
-    printf 'request_rate=inf\n'
-    printf 'temperature=0\n'
-    printf 'seed=0\n'
-    printf 'ignore_eos=true\n'
-    printf 'max_model_len=8192\n'
-    printf 'max_num_seqs=1\n'
-    printf 'max_num_batched_tokens=8192\n'
-    printf 'tensor_parallel_size=1\n'
-    printf 'data_parallel_size=1\n'
-    printf 'dtype=bfloat16\n'
-    printf 'gpu_memory_utilization=0.9\n'
-    printf 'enforce_eager=true\n'
-    printf 'enable_prefix_caching=true\n'
-    printf 'enable_chunked_prefill=true\n'
-    printf 'start_time=%s\n' "$(date -Is)"
+    printf 'source=%s\n' "$VLLM_PYTHONPATH"
 } > "$RUN_DIR/run.env"
+
+KPERF_ENV=(KPERF_ENABLE=0)
+if [[ -n "$CODES" ]]; then
+    KPERF_ENV=(
+        KPERF_ENABLE=1
+        KPERF_RAW_EVENTS="$CODES"
+        KPERF_EVENT_NAMES="$CODES"
+    )
+fi
 
 setsid taskset -c "$CPU_ID" env \
     PYTHONUNBUFFERED=1 \
@@ -98,9 +61,7 @@ setsid taskset -c "$CPU_ID" env \
     CUDA_VISIBLE_DEVICES="$GPU_ID" \
     VLLM_USE_V1=1 \
     VLLM_USE_V2_MODEL_RUNNER=1 \
-    KPERF_RAW_EVENTS="$EVENT_CODES" \
-    KPERF_EVENT_NAMES="$EVENT_CODES" \
-    KPERF_TIME_MODE=inner \
+    "${KPERF_ENV[@]}" \
     "$VLLM_BIN" serve "$MODEL" \
     --served-model-name "$SERVED_MODEL" \
     --host 127.0.0.1 \
@@ -116,32 +77,29 @@ setsid taskset -c "$CPU_ID" env \
     --enable-prefix-caching \
     --enable-chunked-prefill \
     --seed 0 \
-    > "$SERVER_LOG" 2>&1 &
+    > "$RUN_DIR/server.log" 2>&1 &
 SERVICE_PID=$!
-printf '%s\n' "$SERVICE_PID" > "$RUN_DIR/service.pid"
 
 READY=0
 for _ in $(seq 1 180); do
-    if ! kill -0 "$SERVICE_PID" 2>/dev/null; then
-        break
-    fi
+    kill -0 "$SERVICE_PID" 2>/dev/null || break
     if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null; then
         READY=1
         break
     fi
     sleep 2
 done
-
-if [[ "$READY" -ne 1 ]]; then
-    printf 'Service did not become ready for %s\n' "$EVENT_LABEL" >&2
-    tail -n 120 "$SERVER_LOG" >&2 || true
-    exit 5
-fi
+[[ "$READY" -eq 1 ]] || { tail -n 120 "$RUN_DIR/server.log" >&2; exit 4; }
 
 sleep 2
-MEASUREMENT_START_LINE=$(( $(wc -l < "$SERVER_LOG") + 1 ))
-printf '%s\n' "$MEASUREMENT_START_LINE" > "$RUN_DIR/measurement_start_line.txt"
-printf '%s\n' "$(date -Is)" > "$RUN_DIR/measurement_start_time.txt"
+START_LINE=$(( $(wc -l < "$RUN_DIR/server.log") + 1 ))
+
+if [[ "$LABEL" == hotspot ]]; then
+    perf record -C "$CPU_ID" -e cycles:u -F 999 -g --call-graph dwarf \
+        -o "$RUN_DIR/perf.data" -- sleep 600 > "$RUN_DIR/perf.log" 2>&1 &
+    PERF_PID=$!
+    sleep 1
+fi
 
 set +e
 env \
@@ -167,40 +125,27 @@ env \
     --ignore-eos \
     --temperature 0 \
     --seed 0 \
-    > "$BENCH_LOG" 2>&1
+    > "$RUN_DIR/benchmark.log" 2>&1
 BENCH_RC=$?
 set -e
 
-sleep 3
-printf '%s\n' "$(date -Is)" > "$RUN_DIR/measurement_end_time.txt"
-MEASUREMENT_END_LINE=$(wc -l < "$SERVER_LOG")
-printf '%s\n' "$MEASUREMENT_END_LINE" > "$RUN_DIR/measurement_end_line.txt"
+if [[ -n "$PERF_PID" ]]; then
+    kill -INT "$PERF_PID" 2>/dev/null || true
+    wait "$PERF_PID" 2>/dev/null || true
+    PERF_PID=""
+fi
 
-cleanup_service
+sleep 2
+END_LINE=$(wc -l < "$RUN_DIR/server.log")
+cleanup
 SERVICE_PID=""
 trap - EXIT INT TERM
+sed -n "${START_LINE},${END_LINE}p" "$RUN_DIR/server.log" > "$RUN_DIR/measurement.log"
 
-if (( MEASUREMENT_END_LINE >= MEASUREMENT_START_LINE )); then
-    sed -n "${MEASUREMENT_START_LINE},${MEASUREMENT_END_LINE}p" \
-        "$SERVER_LOG" > "$MEASUREMENT_LOG"
-else
-    : > "$MEASUREMENT_LOG"
+[[ "$BENCH_RC" -eq 0 ]] || { tail -n 120 "$RUN_DIR/benchmark.log" >&2; exit 5; }
+if [[ "$LABEL" == hotspot ]]; then
+    perf report --stdio --no-children -i "$RUN_DIR/perf.data" \
+        > "$RUN_DIR/perf_report.txt" 2>&1
 fi
 
-nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu \
-    --format=csv,noheader > "$RUN_DIR/gpu_after.txt"
-nvidia-smi --query-compute-apps=pid,process_name,used_memory \
-    --format=csv,noheader > "$RUN_DIR/gpu_processes_after.txt" || true
-printf 'benchmark_exit_code=%s\n' "$BENCH_RC" >> "$RUN_DIR/run.env"
-printf 'end_time=%s\n' "$(date -Is)" >> "$RUN_DIR/run.env"
-
-if [[ "$BENCH_RC" -ne 0 ]]; then
-    printf 'Benchmark failed for %s with rc=%s\n' \
-        "$EVENT_LABEL" "$BENCH_RC" >&2
-    tail -n 120 "$BENCH_LOG" >&2 || true
-    exit 6
-fi
-
-printf 'completed event=%s run_dir=%s start_line=%s end_line=%s\n' \
-    "$EVENT_LABEL" "$RUN_DIR" "$MEASUREMENT_START_LINE" \
-    "$MEASUREMENT_END_LINE"
+printf 'completed %s\n' "$LABEL"

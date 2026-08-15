@@ -1,36 +1,18 @@
-# vLLM 0.26.0 default V2 runner kperf probes
+# vLLM 0.26.0 默认 V2 六阶段采集
 
-Base source: upstream tag `v0.26.0`, commit
-`568afb3a13806beb53bb2e6bd518269357b237c0`.
+0.26 默认路径使用 `vllm/v1/worker/gpu/model_runner.py`，不复用旧 `gpu_model_runner.py`。打点函数保留原函数名作为外层入口，原函数体移动到对应的 `*_inner()`，外层只执行 `kperf_begin()`、内部调用和 `finally` 中的 `kperf_finish()`。
 
-This branch instruments the default V2 GPU model runner. It does not reuse or
-modify the legacy `vllm/v1/worker/gpu_model_runner.py` probe implementation.
-
-| Stage | Probe boundary | Source file |
+| 阶段 | 打点位置 | 实际调用位置 |
 | --- | --- | --- |
-| `update_states` | Composite request-state update group called at the start of `execute_model()` | `vllm/v1/worker/gpu/model_runner.py` |
-| `prepare_inputs` | `GPUModelRunner.prepare_inputs()`; `prepare_attn()` remains outside | `vllm/v1/worker/gpu/model_runner.py` |
-| `forward` | `Qwen2ForCausalLM.forward()` on the eager Qwen2.5 path | `vllm/model_executor/models/qwen2.py` |
-| `compute_logits` | `Qwen2ForCausalLM.compute_logits()` | `vllm/model_executor/models/qwen2.py` |
-| `sample` | Sampler or rejection-sampler branch after logits and grammar processing | `vllm/v1/worker/gpu/model_runner.py` |
-| `bookkeeping` | Post-sample prompt-logprob, async-output creation, state update, speculation, and KV post-forward region | `vllm/v1/worker/gpu/model_runner.py` |
+| `update_states` | `vllm/v1/worker/gpu/model_runner.py:875` `_update_states()` | 同文件 `execute_model()` 第1206行 |
+| `prepare_inputs` | 同文件第890行 `prepare_inputs()` | `execute_model()` 第1251行 |
+| `forward` | `vllm/model_executor/models/qwen2.py:485` `Qwen2ForCausalLM.forward()` | runner 第1401行 `self.model(...)` |
+| `compute_logits` | `qwen2.py:515` `Qwen2ForCausalLM.compute_logits()` | runner `sample()` 第1117行 |
+| `sample` | `model_runner.py:1132` `_sample()` | `sample()` 第1128行 |
+| `bookkeeping` | `model_runner.py:1498` `_bookkeeping()` | `execute_model()` 第1486行 |
 
-Each stage is represented by one wrapper and one `*_inner()` implementation.
-The bookkeeping interval stays inside the worker-side post-sample region.
-`AsyncOutput.get_output()`, which may execute later or on another thread, is
-not folded into this interval because doing so would change the default async
-execution boundary.
+`prepare_inputs` 不包含紧随其后的 `prepare_attn()`；`sample` 不包含 logits 与 grammar 处理；`bookkeeping` 覆盖 worker 侧采样后处理，但不把异步执行的 `AsyncOutput.get_output()` 合入区间。
 
-The scripts explicitly set `VLLM_USE_V2_MODEL_RUNNER=1` and
-`--enforce-eager`. Eager mode ensures that the Qwen2 `forward()` wrapper is
-executed rather than bypassed by a CUDA graph replay.
+`scripts/920b/run.sh` 固定使用 `VLLM_USE_V2_MODEL_RUNNER=1` 和 eager，按事件组重启服务并调用 `run_one.sh`、`parse_run.py` 与 `summary.py`。模型参数固定为输入7000、输出100、并发1、TP=1、BF16。解析时排除每阶段第一条 prefill，并额外排除 `update_states` 对齐数据的最后一条。
 
-The collection entrypoints are:
-
-- `scripts/run_one.sh`
-- `scripts/run_all.sh`
-- `scripts/parse_run.py`
-
-Required runtime values include `MODEL`, `VLLM_BIN`, and the source or
-editable-install path in `VLLM_PYTHONPATH`.
-
+运行结果写到 `/home/fj/vllm_v1_six_stage/results/v026`。`summary.csv` 是六阶段汇总；`hotspot/perf.data` 和 `hotspot/perf_report.txt` 是未做阶段归并的原始 perf 热点结果。
