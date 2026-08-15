@@ -193,8 +193,6 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory \
     --format=csv,noheader > "$RUN_DIR/gpu_processes_after.txt" || true
 printf 'benchmark_exit_code=%s\n' "$BENCH_RC" >> "$RUN_DIR/run.env"
 printf 'end_time=%s\n' "$(date -Is)" >> "$RUN_DIR/run.env"
-sha256sum "$SERVER_LOG" "$BENCH_LOG" "$MEASUREMENT_LOG" \
-    > "$RUN_DIR/SHA256SUMS.txt"
 
 if [[ "$BENCH_RC" -ne 0 ]]; then
     printf 'Benchmark failed for %s with rc=%s\n' \
