@@ -8,6 +8,7 @@ RUN_ROOT=${RUN_ROOT:?set RUN_ROOT}
 MODEL=${MODEL:?set MODEL}
 VLLM_BIN=${VLLM_BIN:-vllm}
 VLLM_PYTHONPATH=${VLLM_PYTHONPATH:?set VLLM_PYTHONPATH}
+SOURCE_ROOT=${SOURCE_ROOT:-$VLLM_PYTHONPATH}
 SERVED_MODEL=${SERVED_MODEL:-qwen25-1_5b}
 CPU_ID=${CPU_ID:-250}
 GPU_ID=${GPU_ID:-0}
@@ -43,7 +44,7 @@ install -d -m 755 "$RUN_DIR"
     printf 'label=%s\n' "$LABEL"
     printf 'events=%s\n' "$CODES"
     printf 'model=%s\n' "$MODEL"
-    printf 'source=%s\n' "$VLLM_PYTHONPATH"
+    printf 'source=%s\n' "$SOURCE_ROOT"
 } > "$RUN_DIR/run.env"
 
 KPERF_ENV=(KPERF_ENABLE=0)
