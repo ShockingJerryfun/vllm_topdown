@@ -36,7 +36,6 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 [[ ! -e "$RUN_DIR" ]] || { printf 'Exists: %s\n' "$RUN_DIR" >&2; exit 2; }
-ss -ltn | grep -qE ":${PORT}[[:space:]]" && { printf 'Port in use: %s\n' "$PORT" >&2; exit 3; }
 install -d -m 755 "$RUN_DIR"
 
 {

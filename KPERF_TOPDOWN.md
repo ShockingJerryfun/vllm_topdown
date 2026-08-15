@@ -13,6 +13,6 @@
 
 `prepare_inputs` 不包含紧随其后的 `prepare_attn()`；`sample` 不包含 logits 与 grammar 处理；`bookkeeping` 覆盖 worker 侧采样后处理，但不把异步执行的 `AsyncOutput.get_output()` 合入区间。
 
-`scripts/920b/run.sh` 固定使用 `VLLM_USE_V2_MODEL_RUNNER=1` 和 eager，按事件组重启服务并调用 `run_one.sh`、`parse_run.py` 与 `summary.py`。模型参数固定为输入7000、输出100、并发1、TP=1、BF16。解析时排除每阶段第一条 prefill，并额外排除 `update_states` 对齐数据的最后一条。
+`scripts/920b/run.sh` 固定使用 `VLLM_USE_V2_MODEL_RUNNER=1` 和 eager，按事件组重启服务并调用 `run_one.sh`、`parse_run.py` 与 `summary.py`。模型参数固定为输入7000、输出100、并发1、TP=1、BF16。解析时排除每阶段第一条 prefill，并额外排除 `update_states` 最后一条尾部异常。
 
 运行结果写到 `/home/fj/vllm_v1_six_stage/results/v026`。`summary.csv` 是六阶段汇总；`hotspot/perf.data` 和 `hotspot/perf_report.txt` 是未做阶段归并的原始 perf 热点结果。
