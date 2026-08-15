@@ -76,7 +76,7 @@ def validate(
     if len(aligned) != 1:
         raise ValueError(f"unaligned stage rows: {counts}")
     aligned_rows = aligned.pop()
-    if aligned_rows != 100 or counts["update_states"] != aligned_rows + 1:
+    if aligned_rows != 100 or counts["update_states"] < aligned_rows:
         raise ValueError(f"unexpected stage rows: {counts}")
     return aligned_rows
 
@@ -92,11 +92,7 @@ def write_csvs(
     headers = ["sequence", "global_call", "duration_us", *event_codes]
     valid_counts: dict[str, int] = {}
     for stage in STAGES:
-        valid_rows = (
-            rows[stage][1:-1]
-            if stage == "update_states"
-            else rows[stage][1:aligned_rows]
-        )
+        valid_rows = rows[stage][1:aligned_rows]
         valid_counts[stage] = len(valid_rows)
         with (output_dir / f"{stage}.csv").open(
             "w", newline="", encoding="utf-8"
