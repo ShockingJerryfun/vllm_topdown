@@ -25,7 +25,7 @@ done < <(find "$SOURCE_ROOT/vllm" -type f -print0)
 ln -s "$SOURCE_ROOT/kperf_instrument.py" "$RUNTIME/kperf_instrument.py"
 export SOURCE_ROOT VLLM_PYTHONPATH=$RUNTIME
 
-PYTHONPATH="$VLLM_PYTHONPATH" VLLM_USE_V1=1 VLLM_USE_V2_MODEL_RUNNER=1 \
+PYTHONPATH="$VLLM_PYTHONPATH" VLLM_USE_V2_MODEL_RUNNER=1 \
     "$PYTHON_BIN" -c \
     'import os, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen2; print(vllm.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen2.__file__))' \
     > "$RUN_ROOT/runtime.txt"
