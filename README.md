@@ -1,4 +1,31 @@
 <!-- markdownlint-disable MD001 MD041 -->
+
+# 本分支：vLLM 0.26.0 默认V2六阶段PMU打点
+
+`vllm_0.26_perf` 在默认V2 runner上采集六个与0.11同概念的阶段。它通过
+`kperf_instrument.py` 直接调用 Linux `perf_event_open(2)`，在阶段入口
+reset/enable原始CPU PMU事件，在 `finally` 中disable/read并输出时间和计数；
+它不是GPU计数器，也不是通过 `perf stat` 子进程实现。
+
+| 阶段 | 当前分支打点位置 | 阶段含义 |
+| --- | --- | --- |
+| `update_states` | `vllm/v1/worker/gpu/model_runner.py:875` | 根据scheduler输出完成、释放、加入并更新请求状态 |
+| `prepare_inputs` | `model_runner.py:890` | 准备token、position、索引、spec信息和模型输入buffer |
+| `forward` | `vllm/model_executor/models/qwen2.py:485` | 执行Qwen2主体网络并产生hidden states |
+| `compute_logits` | `qwen2.py:515` | 执行LM head和logits processor产生词表logits |
+| `sample` | `model_runner.py:1132` | 执行普通sampler或spec-decode rejection sampler |
+| `bookkeeping` | `model_runner.py:1498` | 处理采样后状态、输出复制、draft token和KV connector后处理 |
+
+`prepare_inputs` 不包含 `prepare_attn()`；`sample` 不包含logits和grammar；
+`bookkeeping` 不包含之后的 `AsyncOutput.get_output()` 等待。标准Qwen2.5
+测试的六阶段不嵌套，但开启prompt logprobs可能在 `bookkeeping` 内再次调用
+`compute_logits`，当前单全局状态采集器不支持这种嵌套。
+
+完整的函数行号、调用链、阶段边界、与0.11的差异及脚本说明见
+[KPERF_TOPDOWN.md](KPERF_TOPDOWN.md)。
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
