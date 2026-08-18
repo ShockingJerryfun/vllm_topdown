@@ -2,14 +2,13 @@
 
 set -Eeuo pipefail
 
-LABEL=${1:?usage: run_one.sh LABEL [EVENT_CODES]}
+LABEL=${1:?usage: run_one.sh LABEL [EVENT_CODES] [EVENT_NAMES]}
 CODES=${2-}
+NAMES=${3-}
 RUN_ROOT=${RUN_ROOT:?set RUN_ROOT}
 MODEL=${MODEL:?set MODEL}
 VLLM_BIN=${VLLM_BIN:-vllm}
 VLLM_PYTHONPATH=${VLLM_PYTHONPATH:?set VLLM_PYTHONPATH}
-SOURCE_ROOT=${SOURCE_ROOT:-$VLLM_PYTHONPATH}
-export -n VLLM_BIN VLLM_PYTHONPATH
 SERVED_MODEL=${SERVED_MODEL:-qwen3-8b}
 GPU_ID=${GPU_ID:-0}
 PORT=${PORT:-18026}
@@ -55,7 +54,6 @@ process_tree() {
 }
 
 trap cleanup EXIT INT TERM
-
 [[ ! -e "$RUN_DIR" ]] || { printf 'Exists: %s\n' "$RUN_DIR" >&2; exit 2; }
 install -d -m 755 "$RUN_DIR"
 
@@ -63,8 +61,8 @@ install -d -m 755 "$RUN_DIR"
     printf 'version=0.26.0\n'
     printf 'label=%s\n' "$LABEL"
     printf 'events=%s\n' "$CODES"
+    printf 'names=%s\n' "$NAMES"
     printf 'model=%s\n' "$MODEL"
-    printf 'source=%s\n' "$SOURCE_ROOT"
     printf 'server_flags=%s\n' "${SERVER_FLAGS:-}"
 } > "$RUN_DIR/run.env"
 
@@ -73,11 +71,12 @@ if [[ -n "$CODES" ]]; then
     KPERF_ENV=(
         KPERF_ENABLE=1
         KPERF_RAW_EVENTS="$CODES"
-        KPERF_EVENT_NAMES="$CODES"
+        KPERF_EVENT_NAMES="$NAMES"
     )
 fi
 read -r -a EXTRA_SERVER_FLAGS <<< "${SERVER_FLAGS:-}"
 
+printf '[%s] starting vLLM\n' "$LABEL"
 setsid env \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH="$VLLM_PYTHONPATH" \
@@ -90,10 +89,10 @@ setsid env \
     --port "$PORT" \
     --block-size 16 \
     --max-model-len "$MAX_MODEL_LEN" \
-    --max-num-seqs 1 \
-    --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
     --tensor-parallel-size 1 \
     --data-parallel-size 1 \
+    --max-num-seqs 1 \
+    --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
     --dtype bfloat16 \
     --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
     --no-enable-prefix-caching \
@@ -105,7 +104,7 @@ SERVICE_PID=$!
 READY=0
 for _ in $(seq 1 180); do
     kill -0 "$SERVICE_PID" 2>/dev/null || break
-    if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
         READY=1
         break
     fi
@@ -115,7 +114,6 @@ done
 
 sleep 2
 START_LINE=$(( $(wc -l < "$RUN_DIR/server.log") + 1 ))
-
 if [[ "$LABEL" == hotspot ]]; then
     TARGET_PIDS=$(process_tree)
     perf record -e cycles:u -F 999 -g --call-graph dwarf \
@@ -125,6 +123,8 @@ if [[ "$LABEL" == hotspot ]]; then
     sleep 1
 fi
 
+printf '[%s] sending input=%s output=%s request\n' \
+    "$LABEL" "$RANDOM_INPUT_LEN" "$RANDOM_OUTPUT_LEN"
 set +e
 env \
     PYTHONPATH="$VLLM_PYTHONPATH" \
@@ -132,7 +132,7 @@ env \
     VLLM_USE_V2_MODEL_RUNNER=1 \
     "$VLLM_BIN" bench serve \
     --backend openai \
-    --base-url "http://127.0.0.1:${PORT}" \
+    --base-url "http://127.0.0.1:$PORT" \
     --endpoint /v1/completions \
     --model "$SERVED_MODEL" \
     --tokenizer "$MODEL" \
@@ -157,7 +157,6 @@ if [[ -n "$PERF_PID" ]]; then
     wait "$PERF_PID" 2>/dev/null || true
     PERF_PID=""
 fi
-
 sleep 2
 END_LINE=$(wc -l < "$RUN_DIR/server.log")
 cleanup
@@ -170,5 +169,4 @@ if [[ "$LABEL" == hotspot ]]; then
     perf report --stdio --no-children -i "$RUN_DIR/perf.data" \
         > "$RUN_DIR/perf_report.txt" 2>&1
 fi
-
-printf 'completed %s\n' "$LABEL"
+printf '[%s] completed\n' "$LABEL"

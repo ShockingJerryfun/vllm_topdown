@@ -39,12 +39,12 @@ finally:
 
 以下行号以当前 `vllm_0.26_perf` 分支为准。
 
-| 阶段 | 探针和被测函数 | 标准Qwen2.5调用位置 | 本阶段做什么 |
+| 阶段 | 探针和被测函数 | 标准Qwen3-8B调用位置 | 本阶段做什么 |
 | --- | --- | --- | --- |
 | `update_states` | `vllm/v1/worker/gpu/model_runner.py:875` `_update_states()`；实际内容在第882行 `_update_states_inner()` | `execute_model()` 第1206行 | 根据scheduler输出完成/释放请求，加入新请求，更新运行中请求，并提交block table的暂存写入 |
 | `prepare_inputs` | `model_runner.py:890` `prepare_inputs()`；实际内容在第899行 `_prepare_inputs_inner()` | `execute_model()` 第1251行 | 排列本轮请求，计算token数量、position、logits索引和spec-decode信息，并准备/拷贝模型输入buffer |
-| `forward` | `vllm/model_executor/models/qwen2.py:485` `Qwen2ForCausalLM.forward()`；实际内容在第503行 `_forward_inner()` | eager测试路径由runner第1401行 `self.model(**model_inputs)` 进入 | 执行Qwen2主体网络，从token/position得到hidden states；包含embedding、Transformer层、attention和MLP，不包含LM head、采样与后处理 |
-| `compute_logits` | `qwen2.py:515` `Qwen2ForCausalLM.compute_logits()`；实际内容在第525行 `_compute_logits_inner()` | runner `sample()` 第1117行 | 对待采样hidden states执行LM head和logits processor，得到词表logits |
+| `forward` | `vllm/model_executor/models/qwen3.py:320` `Qwen3ForCausalLM.forward()`；实际内容在第338行 `_forward_inner()` | runner第1401行 `self.model(**model_inputs)` 进入 | 执行Qwen3主体网络，从token/position得到hidden states；包含embedding、Transformer层、attention和MLP，不包含LM head、采样与后处理 |
+| `compute_logits` | `qwen3.py:350` `Qwen3ForCausalLM.compute_logits()`；实际内容在第360行 `_compute_logits_inner()` | runner `sample()` 第1117行 | 对待采样hidden states执行LM head和logits processor，得到词表logits |
 | `sample` | `model_runner.py:1132` `_sample()`；实际内容在第1143行 `_sample_inner()` | 外层 `sample()` 第1128行 | 普通路径调用sampler选择token；spec decode路径调用rejection sampler决定接受/拒绝的token |
 | `bookkeeping` | `model_runner.py:1498` `_bookkeeping()`；实际内容在第1526行 `_bookkeeping_inner()` | `execute_model()` 第1486行 | 处理prompt logprobs、构造输出、发起异步D2H拷贝、更新请求状态、可选生成draft token并执行KV connector后处理 |
 
@@ -66,8 +66,8 @@ execute_model()
 
 - `prepare_inputs` 不包含紧随其后的 `prepare_attn()`、model state预处理和
   attention metadata后续准备。
-- `forward` 和 `compute_logits` 直接打在Qwen2模型实现中，因此只覆盖经过
-  `Qwen2ForCausalLM` 的模型；其他模型架构不会自动获得这两个探针。
+- 新基线的 `forward` 和 `compute_logits` 直接打在Qwen3模型实现中，只覆盖
+  `Qwen3ForCausalLM`；分支同时保留原有Qwen2探针，但两种模型不会同时进入。
 - `sample` 不包含第1117行的 `compute_logits`，也不包含第1118至1126行的
   grammar bitmask处理。
 - `bookkeeping` 包含 `AsyncOutput` 的创建和异步拷贝发起，但不包含
@@ -81,8 +81,8 @@ execute_model()
 | runner文件 | `vllm/v1/worker/gpu_model_runner.py` | `vllm/v1/worker/gpu/model_runner.py` |
 | 状态更新 | 包裹原有 `_update_states()` | 将V2 `execute_model()` 内六项状态操作抽成新的 `_update_states()` 区间 |
 | 输入准备 | 包裹 `_prepare_inputs()` | 包裹V2 `prepare_inputs()`；不包含独立的 `prepare_attn()` |
-| forward | 在runner的 `_model_forward()` 外层打点，适用于该runner调用的模型 | 直接在 `Qwen2ForCausalLM.forward()` 打点，边界更贴近Qwen2模型主体 |
-| compute_logits | 在 `Qwen2ForCausalLM.compute_logits()` 打点 | 同样在Qwen2模型实现打点，但调用已移入V2 runner的 `sample()` |
+| forward | 在runner的 `_model_forward()` 外层打点，适用于该runner调用的模型 | 直接在 `Qwen3ForCausalLM.forward()` 打点，边界更贴近Qwen3模型主体 |
+| compute_logits | 在 `Qwen2ForCausalLM.compute_logits()` 打点 | 在 `Qwen3ForCausalLM.compute_logits()` 打点，调用位于V2 runner的 `sample()` |
 | sample | `sample_tokens()` 中的 `_sample()` | 从V2 `sample()` 中单独抽出sampler/rejection-sampler区间 |
 | bookkeeping | 同步 `_bookkeeping_sync()` | worker侧 `_bookkeeping()`，发起异步输出复制，但不等待 `get_output()` |
 
@@ -93,7 +93,7 @@ execute_model()
 ## 适用范围和嵌套限制
 
 `kperf_instrument.py` 只有一组全局 `START_NS`、`NAME` 和FD，不维护调用栈，
-因此不支持探针嵌套。当前输入7000、输出100、未请求prompt logprobs的Qwen2.5
+因此不支持探针嵌套。当前输入7000、输出100、未请求prompt logprobs的Qwen3-8B
 测试中，六阶段按上面的顺序执行，没有相互嵌套。
 
 如果请求开启 `prompt_logprobs`，`_bookkeeping_inner()` 第1539至1546行会把
@@ -103,14 +103,13 @@ execute_model()
 
 ## 测试脚本和输出
 
-`scripts/920b/run.sh` 使用 `VLLM_USE_V2_MODEL_RUNNER=1` 和
-`--enforce-eager`，按920B事件组重启服务，并依次调用 `run_one.sh`、
-`parse_run.py` 和 `summary.py`。当前固定测试参数是Qwen2.5-1.5B、输入7000、
-输出100、并发1、TP=1、BF16。
+`scripts/920b/run.sh` 和 `scripts/hygon_c86_7490/run.sh` 都使用0.26默认V2
+runner。新基线固定为Qwen3-8B、Python 3.13、输入7000、输出100、并发1、
+TP=1、BF16。Hygon入口是 `scripts/run_topdown_hygon_v026.sh`。
 
 解析时仅在统计口径中排除每阶段第一条prefill，并排除未与其余阶段对齐的
-`update_states` 尾部记录；原始记录仍保留。结果目录是
-`/home/fj/vllm_v1_six_stage/results/v026`：
+`update_states` 尾部记录；原始记录仍保留。Hygon结果目录是
+`/home/f00955680/vllm_fj/results/hygon_c86_7490/<RUN_ID>`：
 
 - `summary.csv`：六阶段汇总。
 - 各事件组目录：原始日志和解析后的阶段数据。

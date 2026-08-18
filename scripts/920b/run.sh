@@ -5,13 +5,11 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 COMMON_DIR=$(dirname "$SCRIPT_DIR")
 SOURCE_ROOT=$(dirname "$COMMON_DIR")
-RUN_ROOT=${RUN_ROOT:-/home/fj/vllm_v1_six_stage/results/v026}
+RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/920b}
 PYTHON_BIN=${PYTHON_BIN:-$(dirname "${VLLM_BIN:-vllm}")/python}
 [[ -x "$PYTHON_BIN" ]] || PYTHON_BIN=python3
 [[ ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
 install -d -m 755 "$RUN_ROOT"
-CUDA13_LIB=/usr/local/lib/python3.11/site-packages/nvidia/cu13/lib
-export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$CUDA13_LIB
 VLLM_SITE=${VLLM_SITE:-$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')}
 RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
 trap 'rm -rf -- "$RUNTIME"' EXIT
@@ -27,7 +25,7 @@ export SOURCE_ROOT VLLM_PYTHONPATH=$RUNTIME
 
 PYTHONPATH="$VLLM_PYTHONPATH" VLLM_USE_V2_MODEL_RUNNER=1 \
     "$PYTHON_BIN" -c \
-    'import os, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen2; print(vllm.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen2.__file__))' \
+    'import os, sys, torch, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen3; print(sys.version); print(vllm.__version__); print(torch.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen3.__file__))' \
     > "$RUN_ROOT/runtime.txt"
 
 while IFS='|' read -r label codes; do

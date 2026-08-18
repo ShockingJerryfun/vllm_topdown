@@ -2,6 +2,9 @@
 
 # 本分支：vLLM 0.26.0 默认V2六阶段PMU打点
 
+当前基线为Qwen3-8B、Python 3.13、PyTorch 2.11.0。Qwen3模型阶段打点位于
+`qwen3.py`；原有Qwen2探针只作为历史模型兼容保留。
+
 `vllm_0.26_perf` 在默认V2 runner上采集六个与0.11同概念的阶段。它通过
 `kperf_instrument.py` 直接调用 Linux `perf_event_open(2)`，在阶段入口
 reset/enable原始CPU PMU事件，在 `finally` 中disable/read并输出时间和计数；
@@ -11,13 +14,13 @@ reset/enable原始CPU PMU事件，在 `finally` 中disable/read并输出时间�
 | --- | --- | --- |
 | `update_states` | `vllm/v1/worker/gpu/model_runner.py:875` | 根据scheduler输出完成、释放、加入并更新请求状态 |
 | `prepare_inputs` | `model_runner.py:890` | 准备token、position、索引、spec信息和模型输入buffer |
-| `forward` | `vllm/model_executor/models/qwen2.py:485` | 执行Qwen2主体网络并产生hidden states |
-| `compute_logits` | `qwen2.py:515` | 执行LM head和logits processor产生词表logits |
+| `forward` | `vllm/model_executor/models/qwen3.py:320` | 执行Qwen3主体网络并产生hidden states |
+| `compute_logits` | `qwen3.py:350` | 执行LM head和logits processor产生词表logits |
 | `sample` | `model_runner.py:1132` | 执行普通sampler或spec-decode rejection sampler |
 | `bookkeeping` | `model_runner.py:1498` | 处理采样后状态、输出复制、draft token和KV connector后处理 |
 
 `prepare_inputs` 不包含 `prepare_attn()`；`sample` 不包含logits和grammar；
-`bookkeeping` 不包含之后的 `AsyncOutput.get_output()` 等待。标准Qwen2.5
+`bookkeeping` 不包含之后的 `AsyncOutput.get_output()` 等待。标准Qwen3-8B
 测试的六阶段不嵌套，但开启prompt logprobs可能在 `bookkeeping` 内再次调用
 `compute_logits`，当前单全局状态采集器不支持这种嵌套。
 
