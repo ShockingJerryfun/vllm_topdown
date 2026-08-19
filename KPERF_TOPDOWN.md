@@ -105,7 +105,7 @@ execute_model()
 
 公共采集器、单轮启动器和解析器分别是 `kperf_instrument.py`、
 `scripts/run_one.sh` 和 `scripts/parse_run.py`。芯片目录只保存各自的事件组、
-公式、汇总脚本和 `run.sh`。`scripts/920b/run.sh` 和
+公式、汇总脚本和 `run.sh`。`scripts/920b/run.sh`、`scripts/950/run.sh` 和
 `scripts/hygon_c86_7490/run.sh` 都使用0.26默认V2 runner。新基线固定为
 Qwen3-8B、Python 3.13、输入7000、输出100、并发1、TP=1、BF16。
 
@@ -114,6 +114,9 @@ Qwen3-8B、Python 3.13、输入7000、输出100、并发1、TP=1、BF16。
 ```bash
 CHIP=hygon_c86_7490 bash /home/f00955680/vllm_fj/scripts/run_topdown.sh
 ```
+
+鲲鹏950使用 `CHIP=950`；当前已完成事件与公式配置，真机验证状态
+见 `scripts/950/README.md`。
 
 解析时仅在统计口径中排除每阶段第一条prefill，并排除未与其余阶段对齐的
 `update_states` 尾部记录；原始记录仍保留。输出数量不再作为硬性成功条件，
