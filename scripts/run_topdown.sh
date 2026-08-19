@@ -2,16 +2,17 @@
 
 set -Eeuo pipefail
 
+CHIP=${CHIP:?set CHIP to a directory under scripts}
 CONTAINER=${CONTAINER:-vllm026_qwen}
 PROJECT=${PROJECT:-/home/f00955680/vllm_fj}
 MODEL=${MODEL:-/home/f00955680/models/Qwen3-8B}
 VLLM_BIN=${VLLM_BIN:-vllm}
 GPU_ID=${GPU_ID:-0}
 RUN_ID=${RUN_ID:-$(date '+%Y%m%d_%H%M%S')}
-RUN_ROOT="$PROJECT/results/hygon_c86_7490/$RUN_ID"
-RUNNER="$PROJECT/scripts/hygon_c86_7490/run.sh"
+RUN_ROOT="$PROJECT/results/$CHIP/$RUN_ID"
+RUNNER="$PROJECT/scripts/$CHIP/run.sh"
 
-printf '[hygon] container=%s output=%s\n' "$CONTAINER" "$RUN_ROOT"
+printf '[%s] container=%s output=%s\n' "$CHIP" "$CONTAINER" "$RUN_ROOT"
 docker inspect "$CONTAINER" >/dev/null
 [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" == true ]] ||
     docker start "$CONTAINER" >/dev/null
@@ -36,4 +37,4 @@ docker exec \
 test -s "$RUN_ROOT/summary.csv"
 test -s "$RUN_ROOT/collection_quality.csv"
 test -s "$RUN_ROOT/hotspot/perf_report.txt"
-printf '[hygon] completed: %s\n' "$RUN_ROOT"
+printf '[%s] completed: %s\n' "$CHIP" "$RUN_ROOT"

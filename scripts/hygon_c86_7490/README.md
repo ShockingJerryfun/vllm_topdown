@@ -13,7 +13,7 @@ Core PMU 采集。
 | `bookkeeping` | `vllm/v1/worker/gpu/model_runner.py` |
 
 每个阶段在实际逻辑前调用 `kperf_begin()`，在 `finally` 中调用
-`kperf_finish()`。`kperf_instrument.py` 通过 `perf_event_open` 创建 pinned
+`kperf_finish()`。根目录的 `kperf_instrument.py` 通过 `perf_event_open` 创建 pinned
 事件组，按当前线程计数，不调用 `perf stat`。每组不超过五个事件，结果包含
 `time_enabled`、`time_running` 和有效性标记；不对未完整调度的计数做缩放。
 
@@ -32,9 +32,11 @@ Core PMU 采集。
 宿主机执行：
 
 ```bash
-bash /home/f00955680/vllm_fj/scripts/run_topdown_hygon_v026.sh
+CHIP=hygon_c86_7490 bash /home/f00955680/vllm_fj/scripts/run_topdown.sh
 ```
 
 默认参数为 Qwen3-8B、BF16、input 7000、output 100、并发 1、TP=1、
 `max-model-len=16384`、`gpu-memory-utilization=0.8`。默认不启用
 `--enforce-eager` 和 `--async-scheduling`，可通过 `SERVER_FLAGS` 增加。
+输出100是质量检查的预期值，不是硬性行数门槛；原始记录全部保留，统计时
+排除每阶段第一条prefill和未对齐的 `update_states` 尾部记录。

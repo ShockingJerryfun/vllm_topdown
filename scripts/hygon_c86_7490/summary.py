@@ -140,18 +140,26 @@ def format_value(metric: str, value: float | None) -> str:
 
 
 def write_quality(root: Path) -> None:
+    fields = (
+        "stage",
+        "expected_raw",
+        "raw",
+        "selected",
+        "valid",
+        "invalid",
+        "status",
+    )
     with (root / "collection_quality.csv").open(
         "w", newline="", encoding="utf-8-sig"
     ) as handle:
         writer = csv.writer(handle)
-        writer.writerow(["group", "stage", "rows", "valid", "invalid"])
+        writer.writerow(["group", *fields])
         for group in GROUPS:
-            for stage in STAGES:
-                path = root / group / "parsed" / f"{stage}.csv"
-                with path.open(newline="", encoding="utf-8") as source:
-                    rows = list(csv.DictReader(source))
-                valid = sum(row["valid"] == "1" for row in rows)
-                writer.writerow([group, stage, len(rows), valid, len(rows) - valid])
+            with (root / group / "collection_quality.csv").open(
+                newline="", encoding="utf-8-sig"
+            ) as source:
+                for row in csv.DictReader(source):
+                    writer.writerow([group, *(row[field] for field in fields)])
 
 
 def main() -> int:

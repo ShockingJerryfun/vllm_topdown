@@ -3,7 +3,8 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-SOURCE_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+COMMON_DIR=$(dirname "$SCRIPT_DIR")
+SOURCE_ROOT=$(dirname "$COMMON_DIR")
 RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/hygon_c86_7490}
 PYTHON_BIN=${PYTHON_BIN:-$(dirname "${VLLM_BIN:-vllm}")/python}
 [[ -x "$PYTHON_BIN" ]] || PYTHON_BIN=python3
@@ -16,7 +17,7 @@ grep -qm1 'vendor_id.*HygonGenuine' /proc/cpuinfo || {
 }
 
 VLLM_SITE=${VLLM_SITE:-$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')}
-RUNTIME=$(mktemp -d /tmp/vllm-c86.XXXXXX)
+RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
 trap 'rm -rf -- "$RUNTIME"' EXIT
 cp -rs "$VLLM_SITE" "$RUNTIME/vllm"
 while IFS= read -r -d '' file; do
@@ -25,8 +26,8 @@ while IFS= read -r -d '' file; do
     mkdir -p "$(dirname "$target")"
     ln -sfn "$file" "$target"
 done < <(find "$SOURCE_ROOT/vllm" -type f -print0)
-ln -s "$SCRIPT_DIR/kperf_instrument.py" "$RUNTIME/kperf_instrument.py"
-export VLLM_PYTHONPATH=$RUNTIME
+ln -s "$SOURCE_ROOT/kperf_instrument.py" "$RUNTIME/kperf_instrument.py"
+export SOURCE_ROOT VLLM_PYTHONPATH=$RUNTIME
 
 {
     lscpu
@@ -40,9 +41,10 @@ PYTHONPATH="$VLLM_PYTHONPATH" VLLM_USE_V2_MODEL_RUNNER=1 "$PYTHON_BIN" -c \
     > "$RUN_ROOT/runtime.txt"
 
 while IFS='|' read -r label codes names; do
-    RUN_ROOT="$RUN_ROOT" "$SCRIPT_DIR/run_one.sh" "$label" "$codes" "$names"
-    "$PYTHON_BIN" "$SCRIPT_DIR/parse_run.py" "$RUN_ROOT/$label" \
-        --event-names "$names"
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$names"
+    "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label" \
+        --event-names "$names" \
+        --expected-calls "${RANDOM_OUTPUT_LEN:-100}"
 done <<'EOF'
 base|0x76,0xc0,0xc2,0xc3,0xc1|cycles,instructions,branches,branch_misses,retired_uops
 uops_ls|0x76,0xc0,0x03aa,0xc1,0x0729|cycles,instructions,dispatched_uops,retired_uops,ls_ops_dispatched
@@ -52,6 +54,6 @@ dcache|0xc0,0x40,0xc860,0x0864,0x7064|instructions,l1d_8byte_accesses,l2_data_re
 dtlb|0xc0,0xff45,0x0f45,0xf045,0x0346|instructions,l1_dtlb_misses,dtlb_l2_hits,dtlb_l2_misses,data_page_walks
 EOF
 
-RUN_ROOT="$RUN_ROOT" "$SCRIPT_DIR/run_one.sh" hotspot
+RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
 "$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT"
 printf '[hygon] completed: %s\n' "$RUN_ROOT"

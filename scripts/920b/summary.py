@@ -17,6 +17,17 @@ STAGES = (
     "sample",
     "bookkeeping",
 )
+GROUPS = (
+    "topdown",
+    "icache",
+    "dcache",
+    "l3",
+    "tlb1",
+    "tlb2",
+    "branch",
+    "imix",
+    "imix2",
+)
 PERCENT_METRICS = {
     "IPC/Retire",
     "FrontendBound",
@@ -51,6 +62,7 @@ def read_rows(root: Path, group: str, stage: str) -> list[dict[str, str]]:
         return [
             {key: value or "" for key, value in row.items() if key is not None}
             for row in csv.DictReader(handle)
+            if row["valid"] == "1"
         ]
 
 
@@ -159,6 +171,29 @@ def format_value(metric: str, value: float | None) -> str:
     return f"{value:.2f}"
 
 
+def write_quality(root: Path) -> None:
+    fields = (
+        "stage",
+        "expected_raw",
+        "raw",
+        "selected",
+        "valid",
+        "invalid",
+        "status",
+    )
+    with (root / "collection_quality.csv").open(
+        "w", newline="", encoding="utf-8-sig"
+    ) as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["group", *fields])
+        for group in GROUPS:
+            with (root / group / "collection_quality.csv").open(
+                newline="", encoding="utf-8-sig"
+            ) as source:
+                for row in csv.DictReader(source):
+                    writer.writerow([group, *(row[field] for field in fields)])
+
+
 def main() -> int:
     args = parse_args()
     values = {stage: stage_metrics(args.run_root, stage) for stage in STAGES}
@@ -177,6 +212,7 @@ def main() -> int:
             )
         writer.writerow([""])
         writer.writerow(["热点函数占比：", *("见热点函数" for _ in STAGES)])
+    write_quality(args.run_root)
     LOGGER.info("wrote %s", output)
     return 0
 

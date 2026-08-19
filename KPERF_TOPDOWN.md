@@ -9,11 +9,11 @@ runner：`vllm/v1/worker/gpu/model_runner.py`，不使用0.11的
 `kperf_instrument.py` 通过 Linux `perf_event_open(2)` 为当前执行线程打开
 `PERF_TYPE_RAW` PMU事件。它不启动 `perf stat` 子进程，也不是GPU计数器：
 
-1. `kperf_begin(stage)` 对每个事件FD执行 reset、enable，并记录开始时间。
+1. `kperf_begin(stage)` 对事件组执行 reset、enable，并记录开始时间。
 2. 被测代码在原位置执行。
-3. `kperf_finish(stage)` 在 `finally` 中执行 disable、read。
+3. `kperf_finish(stage)` 在 `finally` 中执行 disable、group read。
 4. 每次输出一行
-   `阶段,调用序号,时间(us),事件1计数,事件2计数,...`。
+   `KPERF,阶段,调用序号,时间(us),time_enabled,time_running,valid,事件计数...`。
 
 已有完整函数使用“外层函数加探针、原函数体移入 `*_inner()`”的形式：
 
@@ -103,12 +103,21 @@ execute_model()
 
 ## 测试脚本和输出
 
-`scripts/920b/run.sh` 和 `scripts/hygon_c86_7490/run.sh` 都使用0.26默认V2
-runner。新基线固定为Qwen3-8B、Python 3.13、输入7000、输出100、并发1、
-TP=1、BF16。Hygon入口是 `scripts/run_topdown_hygon_v026.sh`。
+公共采集器、单轮启动器和解析器分别是 `kperf_instrument.py`、
+`scripts/run_one.sh` 和 `scripts/parse_run.py`。芯片目录只保存各自的事件组、
+公式、汇总脚本和 `run.sh`。`scripts/920b/run.sh` 和
+`scripts/hygon_c86_7490/run.sh` 都使用0.26默认V2 runner。新基线固定为
+Qwen3-8B、Python 3.13、输入7000、输出100、并发1、TP=1、BF16。
+
+宿主机统一使用 `scripts/run_topdown.sh`，由 `CHIP` 明确选择已有芯片目录：
+
+```bash
+CHIP=hygon_c86_7490 bash /home/f00955680/vllm_fj/scripts/run_topdown.sh
+```
 
 解析时仅在统计口径中排除每阶段第一条prefill，并排除未与其余阶段对齐的
-`update_states` 尾部记录；原始记录仍保留。Hygon结果目录是
+`update_states` 尾部记录；原始记录仍保留。输出数量不再作为硬性成功条件，
+预期数量、实际数量、有效数量和状态写入 `collection_quality.csv`。Hygon结果目录是
 `/home/f00955680/vllm_fj/results/hygon_c86_7490/<RUN_ID>`：
 
 - `summary.csv`：六阶段汇总。

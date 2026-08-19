@@ -29,9 +29,10 @@ PYTHONPATH="$VLLM_PYTHONPATH" VLLM_USE_V2_MODEL_RUNNER=1 \
     > "$RUN_ROOT/runtime.txt"
 
 while IFS='|' read -r label codes; do
-    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes"
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
     "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label" \
-        --event-codes "$codes"
+        --event-names "$codes" \
+        --expected-calls "${RANDOM_OUTPUT_LEN:-100}"
 done <<'EOF'
 topdown|0x0011,0x0008,0x003e,0x001b
 icache|0x0008,0x0001,0x0014,0x0027,0x0028

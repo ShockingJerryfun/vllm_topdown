@@ -27,6 +27,10 @@ reset/enable原始CPU PMU事件，在 `finally` 中disable/read并输出时间�
 完整的函数行号、调用链、阶段边界、与0.11的差异及脚本说明见
 [KPERF_TOPDOWN.md](KPERF_TOPDOWN.md)。
 
+公共采集代码位于根目录 `kperf_instrument.py` 和 `scripts/`；芯片目录只保留
+事件组、公式和汇总实现。宿主机通过 `CHIP=<芯片目录> scripts/run_topdown.sh`
+选择对应芯片。
+
 ---
 
 <p align="center">

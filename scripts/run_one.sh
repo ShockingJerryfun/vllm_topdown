@@ -2,8 +2,9 @@
 
 set -Eeuo pipefail
 
-LABEL=${1:?usage: run_one.sh LABEL [EVENT_CODES]}
+LABEL=${1:?usage: run_one.sh LABEL [EVENT_CODES] [EVENT_NAMES]}
 CODES=${2-}
+NAMES=${3:-$CODES}
 RUN_ROOT=${RUN_ROOT:?set RUN_ROOT}
 MODEL=${MODEL:?set MODEL}
 VLLM_BIN=${VLLM_BIN:-vllm}
@@ -20,6 +21,8 @@ RANDOM_INPUT_LEN=${RANDOM_INPUT_LEN:-7000}
 RANDOM_OUTPUT_LEN=${RANDOM_OUTPUT_LEN:-100}
 REQUEST_RATE=${REQUEST_RATE:-1}
 NUM_PROMPTS=${NUM_PROMPTS:-1}
+EXECUTION_MODE=graph
+[[ " ${SERVER_FLAGS:-} " == *" --enforce-eager "* ]] && EXECUTION_MODE=eager
 RUN_DIR="$RUN_ROOT/$LABEL"
 SERVICE_PID=""
 PERF_PID=""
@@ -63,8 +66,10 @@ install -d -m 755 "$RUN_DIR"
     printf 'version=0.26.0\n'
     printf 'label=%s\n' "$LABEL"
     printf 'events=%s\n' "$CODES"
+    printf 'names=%s\n' "$NAMES"
     printf 'model=%s\n' "$MODEL"
     printf 'source=%s\n' "$SOURCE_ROOT"
+    printf 'execution_mode=%s\n' "$EXECUTION_MODE"
     printf 'server_flags=%s\n' "${SERVER_FLAGS:-}"
 } > "$RUN_DIR/run.env"
 
@@ -73,7 +78,7 @@ if [[ -n "$CODES" ]]; then
     KPERF_ENV=(
         KPERF_ENABLE=1
         KPERF_RAW_EVENTS="$CODES"
-        KPERF_EVENT_NAMES="$CODES"
+        KPERF_EVENT_NAMES="$NAMES"
     )
 fi
 read -r -a EXTRA_SERVER_FLAGS <<< "${SERVER_FLAGS:-}"

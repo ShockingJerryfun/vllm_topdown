@@ -1,17 +1,28 @@
+from __future__ import annotations
+
 import ctypes
 import errno
 import fcntl
 import os
 import platform
 import struct
+import sys
 import time
 
 PERF_EVENT_OPEN = {"aarch64": 241, "x86_64": 298}.get(platform.machine(), 241)
 PERF_TYPE_RAW = 4
+PERF_FORMAT_TOTAL_TIME_ENABLED = 1 << 0
+PERF_FORMAT_TOTAL_TIME_RUNNING = 1 << 1
+PERF_FORMAT_ID = 1 << 2
+PERF_FORMAT_GROUP = 1 << 3
 PERF_IOC_ENABLE = 0x2400
 PERF_IOC_DISABLE = 0x2401
 PERF_IOC_RESET = 0x2403
+PERF_IOC_ID = 0x80082407
+PERF_IOC_FLAG_GROUP = 1
+PERF_FLAG_FD_CLOEXEC = 1 << 3
 PERF_DISABLED = 1 << 0
+PERF_PINNED = 1 << 2
 PERF_EXCLUDE_HV = 1 << 6
 
 
@@ -31,7 +42,7 @@ class PerfEventAttr(ctypes.Structure):
     ]
 
 
-LIBC = ctypes.CDLL("libc.so.6", use_errno=True)
+LIBC = ctypes.CDLL(None, use_errno=True)
 LIBC.syscall.restype = ctypes.c_long
 LIBC.syscall.argtypes = [
     ctypes.c_long,
@@ -52,66 +63,136 @@ NAMES = [
     if name.strip()
 ]
 FDS: list[int] = []
+IDS: list[int] = []
 START_NS = 0
 CALL = 0
 NAME = ""
+ACTIVE = False
+
+
+def emit(message: str) -> None:
+    sys.stdout.write(f"{message}\n")
+    sys.stdout.flush()
+
+
+def event_id(fd: int) -> int:
+    data = bytearray(8)
+    fcntl.ioctl(fd, PERF_IOC_ID, data, True)
+    return struct.unpack("<Q", data)[0]
+
+
+def open_event(event: int, group_fd: int, leader: bool) -> int:
+    attr = PerfEventAttr()
+    attr.type = PERF_TYPE_RAW
+    attr.size = ctypes.sizeof(PerfEventAttr)
+    attr.config = event
+    attr.read_format = (
+        PERF_FORMAT_GROUP
+        | PERF_FORMAT_TOTAL_TIME_ENABLED
+        | PERF_FORMAT_TOTAL_TIME_RUNNING
+        | PERF_FORMAT_ID
+    )
+    attr.flags = PERF_EXCLUDE_HV
+    if leader:
+        attr.flags |= PERF_DISABLED | PERF_PINNED
+    fd = LIBC.syscall(
+        PERF_EVENT_OPEN,
+        ctypes.byref(attr),
+        0,
+        -1,
+        group_fd,
+        PERF_FLAG_FD_CLOEXEC,
+    )
+    if fd < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, errno.errorcode.get(error, "unknown"))
+    return int(fd)
+
+
+def close_group() -> None:
+    for fd in FDS:
+        os.close(fd)
+    FDS.clear()
+    IDS.clear()
 
 
 def init() -> None:
     if os.getenv("KPERF_ENABLE") != "1" or not EVENTS:
         return
-    for index, event in enumerate(EVENTS):
-        attr = PerfEventAttr()
-        attr.type = PERF_TYPE_RAW
-        attr.size = ctypes.sizeof(PerfEventAttr)
-        attr.config = event
-        attr.flags = PERF_DISABLED | PERF_EXCLUDE_HV
-        fd = LIBC.syscall(PERF_EVENT_OPEN, ctypes.byref(attr), 0, -1, -1, 0)
-        if fd < 0:
-            error = ctypes.get_errno()
-            for opened_fd in FDS:
-                os.close(opened_fd)
-            FDS.clear()
-            print(
-                f"[kperf] perf_event_open #{index} cfg=0x{event:04x} "
-                f"failed errno={error} {errno.errorcode.get(error, 'unknown')}",
-                flush=True,
-            )
-            return
-        FDS.append(int(fd))
-    print(f"[kperf] enabled: events={NAMES}, fds={FDS}", flush=True)
+    if len(EVENTS) != len(NAMES):
+        emit("[kperf] init failed: event names do not match event codes")
+        return
+    try:
+        for index, event in enumerate(EVENTS):
+            fd = open_event(event, FDS[0] if FDS else -1, index == 0)
+            FDS.append(fd)
+            IDS.append(event_id(fd))
+    except OSError as error:
+        close_group()
+        emit(
+            f"[kperf] init failed: event=0x{event:04x} "
+            f"errno={error.errno} {error.strerror}"
+        )
+        return
+    emit(f"[kperf] enabled: names={NAMES}, events={EVENTS}, fds={FDS}")
 
 
 def kperf_begin(name: str) -> None:
-    global START_NS, CALL, NAME
+    global ACTIVE, CALL, NAME, START_NS
     if not FDS:
         return
     try:
-        for fd in FDS:
-            fcntl.ioctl(fd, PERF_IOC_RESET, 0)
-            fcntl.ioctl(fd, PERF_IOC_ENABLE, 0)
-        START_NS = time.time_ns()
-        CALL += 1
-        NAME = name
-    except OSError:
-        pass
+        fcntl.ioctl(FDS[0], PERF_IOC_RESET, PERF_IOC_FLAG_GROUP)
+        fcntl.ioctl(FDS[0], PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP)
+    except OSError as error:
+        ACTIVE = False
+        emit(f"[kperf] begin failed: stage={name} errno={error.errno}")
+        return
+    START_NS = time.perf_counter_ns()
+    CALL += 1
+    NAME = name
+    ACTIVE = True
+
+
+def read_group() -> tuple[int, int, list[int]]:
+    size = 24 + 16 * len(FDS)
+    data = os.read(FDS[0], size)
+    if len(data) != size:
+        raise OSError(errno.EIO, "short group read")
+    values = struct.unpack(f"<QQQ{2 * len(FDS)}Q", data)
+    if values[0] != len(FDS):
+        raise OSError(errno.EIO, "unexpected group size")
+    time_enabled, time_running = values[1:3]
+    by_id = dict(zip(values[4::2], values[3::2], strict=True))
+    return time_enabled, time_running, [by_id.get(event, 0) for event in IDS]
 
 
 def kperf_finish(name: str) -> None:
-    if not FDS:
+    global ACTIVE
+    if not FDS or not ACTIVE:
         return
-    end_ns = time.time_ns()
-    counts: list[int] = []
-    for fd in FDS:
-        try:
-            fcntl.ioctl(fd, PERF_IOC_DISABLE, 0)
-            data = os.read(fd, 8)
-            counts.append(struct.unpack("<Q", data)[0] if len(data) == 8 else 0)
-        except OSError:
-            counts.append(0)
-    fields = [name or NAME, str(CALL), f"{(end_ns - START_NS) / 1000:.2f}"]
-    fields.extend(str(count) for count in counts)
-    print(",".join(fields), flush=True)
+    end_ns = time.perf_counter_ns()
+    ACTIVE = False
+    try:
+        fcntl.ioctl(FDS[0], PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP)
+        time_enabled, time_running, counts = read_group()
+        valid = int(time_running > 0 and time_running == time_enabled)
+    except OSError as error:
+        emit(f"[kperf] finish failed: stage={name} errno={error.errno}")
+        time_enabled, time_running = 0, 0
+        counts = [0] * len(FDS)
+        valid = 0
+    fields = [
+        "KPERF",
+        name or NAME,
+        str(CALL),
+        f"{(end_ns - START_NS) / 1000:.2f}",
+        str(time_enabled),
+        str(time_running),
+        str(valid),
+        *(str(count) for count in counts),
+    ]
+    emit(",".join(fields))
 
 
 init()
