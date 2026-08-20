@@ -3,9 +3,9 @@
 set -Eeuo pipefail
 
 CHIP=${CHIP:?set CHIP to a directory under scripts}
-CONTAINER=${CONTAINER:-vllm026_qwen}
-PROJECT=${PROJECT:-/home/f00955680/vllm_fj}
-MODEL=${MODEL:-/home/f00955680/models/Qwen3-8B}
+CONTAINER=${CONTAINER:-qwen3_container_fj}
+PROJECT=${PROJECT:-/home/fj/vllm_fj}
+MODEL=${MODEL:-/home/model/Qwen3-8B-Instruct}
 VLLM_BIN=${VLLM_BIN:-vllm}
 GPU_ID=${GPU_ID:-0}
 RUN_ID=${RUN_ID:-$(date '+%Y%m%d_%H%M%S')}
@@ -24,8 +24,8 @@ docker exec \
     -e MODEL="$MODEL" \
     -e VLLM_BIN="$VLLM_BIN" \
     -e GPU_ID="$GPU_ID" \
-    -e SERVER_FLAGS="${SERVER_FLAGS:-}" \
-    -e MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}" \
+    -e SERVER_FLAGS="${SERVER_FLAGS:---async-scheduling}" \
+    -e MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}" \
     -e MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-163840}" \
     -e GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.8}" \
     -e RANDOM_INPUT_LEN="${RANDOM_INPUT_LEN:-7000}" \

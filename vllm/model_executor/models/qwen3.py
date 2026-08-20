@@ -30,7 +30,6 @@ import torch
 from torch import nn
 from transformers import Qwen3Config
 
-from kperf_instrument import kperf_begin, kperf_finish
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
@@ -324,40 +323,12 @@ class Qwen3ForCausalLM(
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor | IntermediateTensors:
-        kperf_begin("forward")
-        try:
-            return self._forward_inner(
-                input_ids,
-                positions,
-                intermediate_tensors,
-                inputs_embeds,
-            )
-        finally:
-            kperf_finish("forward")
-
-    def _forward_inner(
-        self,
-        input_ids: torch.Tensor | None,
-        positions: torch.Tensor,
-        intermediate_tensors: IntermediateTensors | None = None,
-        inputs_embeds: torch.Tensor | None = None,
-    ) -> torch.Tensor | IntermediateTensors:
         hidden_states = self.model(
             input_ids, positions, intermediate_tensors, inputs_embeds
         )
         return hidden_states
 
     def compute_logits(
-        self,
-        hidden_states: torch.Tensor,
-    ) -> torch.Tensor | None:
-        kperf_begin("compute_logits")
-        try:
-            return self._compute_logits_inner(hidden_states)
-        finally:
-            kperf_finish("compute_logits")
-
-    def _compute_logits_inner(
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor | None:

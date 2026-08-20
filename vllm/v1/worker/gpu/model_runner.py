@@ -790,6 +790,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.postprocess_sampled(**outputs)
 
     def add_requests(self, scheduler_output: SchedulerOutput) -> None:
+        kperf_begin("add_requests")
+        try:
+            self._add_requests_inner(scheduler_output)
+        finally:
+            kperf_finish("add_requests")
+
+    def _add_requests_inner(self, scheduler_output: SchedulerOutput) -> None:
         for new_req_data in scheduler_output.scheduled_new_reqs:
             assert new_req_data.prompt_token_ids is not None
             assert new_req_data.prefill_token_ids is not None
@@ -871,21 +878,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.kv_cache_config.num_blocks,
                 scheduler_output.kv_cache_block_copies,
             )
-
-    def _update_states(self, scheduler_output: SchedulerOutput) -> None:
-        kperf_begin("update_states")
-        try:
-            self._update_states_inner(scheduler_output)
-        finally:
-            kperf_finish("update_states")
-
-    def _update_states_inner(self, scheduler_output: SchedulerOutput) -> None:
-        self.update_pp_decode_requests()
-        self.finish_requests(scheduler_output)
-        self.free_states(scheduler_output)
-        self.add_requests(scheduler_output)
-        self.update_requests(scheduler_output)
-        self.block_tables.apply_staged_writes()
 
     def prepare_inputs(
         self, scheduler_output: SchedulerOutput, batch_desc: BatchExecutionDescriptor
@@ -1080,6 +1072,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     def prepare_attn(
         self, input_batch: InputBatch
     ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+        kperf_begin("prepare_attn_runner")
+        try:
+            return self._prepare_attn_inner(input_batch)
+        finally:
+            kperf_finish("prepare_attn_runner")
+
+    def _prepare_attn_inner(
+        self, input_batch: InputBatch
+    ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
         if self.pcp_manager is not None:
             return self.pcp_manager.prepare_attn(input_batch)
 
@@ -1113,6 +1114,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         input_batch: InputBatch,
         grammar_output: GrammarOutput | None,
     ) -> tuple[SamplerOutput, torch.Tensor, torch.Tensor]:
+        kperf_begin("sample")
+        try:
+            return self._sample_inner(hidden_states, input_batch, grammar_output)
+        finally:
+            kperf_finish("sample")
+
+    def _sample_inner(
+        self,
+        hidden_states: torch.Tensor,
+        input_batch: InputBatch,
+        grammar_output: GrammarOutput | None,
+    ) -> tuple[SamplerOutput, torch.Tensor, torch.Tensor]:
         sample_hidden_states = hidden_states[input_batch.logits_indices]
         logits = self.model.compute_logits(sample_hidden_states)
         if grammar_output is not None:
@@ -1125,26 +1138,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 grammar_output.grammar_bitmask,
             )
 
-        sampler_output = self._sample(logits, input_batch)
-
-        return sampler_output, sampler_output.num_sampled, sampler_output.num_rejected
-
-    def _sample(
-        self,
-        logits: torch.Tensor,
-        input_batch: InputBatch,
-    ) -> SamplerOutput:
-        kperf_begin("sample")
-        try:
-            return self._sample_inner(logits, input_batch)
-        finally:
-            kperf_finish("sample")
-
-    def _sample_inner(
-        self,
-        logits: torch.Tensor,
-        input_batch: InputBatch,
-    ) -> SamplerOutput:
         if input_batch.num_draft_tokens == 0 or self.rejection_sampler is None:
             assert self.sampler is not None
             sampler_output = self.sampler(logits, input_batch)
@@ -1159,11 +1152,31 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.speculator.draft_logits,
             )
 
-        return sampler_output
+        return sampler_output, sampler_output.num_sampled, sampler_output.num_rejected
 
     def postprocess_sampled(
         self,
         idx_mapping: torch.Tensor,  # May include -1 for masked entries
+        sampled_tokens: torch.Tensor,
+        num_sampled: torch.Tensor,
+        num_rejected: torch.Tensor,
+        query_start_loc: torch.Tensor | None = None,
+    ) -> None:
+        kperf_begin("postprocess_sampled")
+        try:
+            self._postprocess_sampled_inner(
+                idx_mapping,
+                sampled_tokens,
+                num_sampled,
+                num_rejected,
+                query_start_loc,
+            )
+        finally:
+            kperf_finish("postprocess_sampled")
+
+    def _postprocess_sampled_inner(
+        self,
+        idx_mapping: torch.Tensor,
         sampled_tokens: torch.Tensor,
         num_sampled: torch.Tensor,
         num_rejected: torch.Tensor,
@@ -1203,7 +1216,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     ) -> ModelRunnerOutput | IntermediateTensors | None:
         if not dummy_run:
             # Update the request states.
-            self._update_states(scheduler_output)
+            self.update_pp_decode_requests()
+            self.finish_requests(scheduler_output)
+            self.free_states(scheduler_output)
+            self.add_requests(scheduler_output)
+            self.update_requests(scheduler_output)
+            self.block_tables.apply_staged_writes()
             if scheduler_output.total_num_scheduled_tokens == 0:
                 # No need to run the model.
                 empty_output = self.kv_connector.no_forward(scheduler_output)
@@ -1483,58 +1501,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 input_batch,
             )
 
-        return self._bookkeeping(
-            input_batch,
-            sampler_output,
-            num_sampled,
-            num_rejected,
-            hidden_states,
-            aux_hidden_states,
-            attn_metadata,
-            slot_mappings_by_layer,
-            finished_req_ids,
-        )
-
-    def _bookkeeping(
-        self,
-        input_batch: InputBatch,
-        sampler_output: SamplerOutput,
-        num_sampled: torch.Tensor,
-        num_rejected: torch.Tensor,
-        hidden_states: torch.Tensor,
-        aux_hidden_states: list[torch.Tensor] | None,
-        attn_metadata: dict[str, Any] | None,
-        slot_mappings_by_layer: dict[str, torch.Tensor] | None,
-        finished_req_ids: set[str],
-    ) -> AsyncOutput:
-        kperf_begin("bookkeeping")
-        try:
-            return self._bookkeeping_inner(
-                input_batch,
-                sampler_output,
-                num_sampled,
-                num_rejected,
-                hidden_states,
-                aux_hidden_states,
-                attn_metadata,
-                slot_mappings_by_layer,
-                finished_req_ids,
-            )
-        finally:
-            kperf_finish("bookkeeping")
-
-    def _bookkeeping_inner(
-        self,
-        input_batch: InputBatch,
-        sampler_output: SamplerOutput,
-        num_sampled: torch.Tensor,
-        num_rejected: torch.Tensor,
-        hidden_states: torch.Tensor,
-        aux_hidden_states: list[torch.Tensor] | None,
-        attn_metadata: dict[str, Any] | None,
-        slot_mappings_by_layer: dict[str, torch.Tensor] | None,
-        finished_req_ids: set[str],
-    ) -> AsyncOutput:
         assert self.prompt_logprobs_worker is not None
         prompt_logprobs_dict = self.prompt_logprobs_worker.compute_prompt_logprobs(
             self.model.compute_logits,

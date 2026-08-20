@@ -1,16 +1,18 @@
-# Hygon C86-4G 7490 六阶段采集
+# Hygon C86-4G 7490 八阶段采集
 
-本目录用于 vLLM 0.26.0 默认 V2、Qwen3-8B、Python 3.13 基线的六阶段
+本目录用于 vLLM 0.26.0 默认 V2、Qwen3-8B、Python 3.13 基线的八阶段
 Core PMU 采集。
 
 | 阶段 | 打点位置 |
 | --- | --- |
-| `update_states` | `vllm/v1/worker/gpu/model_runner.py` |
+| `add_requests` | `vllm/v1/worker/gpu/model_runner.py` |
 | `prepare_inputs` | `vllm/v1/worker/gpu/model_runner.py` |
-| `forward` | `vllm/model_executor/models/qwen3.py` |
-| `compute_logits` | `vllm/model_executor/models/qwen3.py` |
+| `prepare_attn_runner` | `vllm/v1/worker/gpu/model_runner.py` |
+| `prepare_attn_model_state` | `vllm/v1/worker/gpu/model_states/default.py` |
+| `run_fullgraph` | `vllm/v1/worker/gpu/cudagraph_utils.py` |
 | `sample` | `vllm/v1/worker/gpu/model_runner.py` |
-| `bookkeeping` | `vllm/v1/worker/gpu/model_runner.py` |
+| `async_output_init` | `vllm/v1/worker/gpu/async_utils.py` |
+| `postprocess_sampled` | `vllm/v1/worker/gpu/model_runner.py` |
 
 每个阶段在实际逻辑前调用 `kperf_begin()`，在 `finally` 中调用
 `kperf_finish()`。根目录的 `kperf_instrument.py` 通过 `perf_event_open` 创建 pinned
@@ -32,11 +34,10 @@ Core PMU 采集。
 宿主机执行：
 
 ```bash
-CHIP=hygon_c86_7490 bash /home/f00955680/vllm_fj/scripts/run_topdown.sh
+CHIP=hygon_c86_7490 bash /home/fj/vllm_fj/scripts/run_topdown.sh
 ```
 
 默认参数为 Qwen3-8B、BF16、input 7000、output 100、并发 1、TP=1、
-`max-model-len=16384`、`gpu-memory-utilization=0.8`。默认不启用
-`--enforce-eager` 和 `--async-scheduling`，可通过 `SERVER_FLAGS` 增加。
-输出100是质量检查的预期值，不是硬性行数门槛；原始记录全部保留，统计时
-排除每阶段第一条prefill和未对齐的 `update_states` 尾部记录。
+`max-model-len=8192`、`gpu-memory-utilization=0.8`。默认启用
+`--async-scheduling`，可通过 `SERVER_FLAGS` 覆盖。输出100对应99个完整
+decode轮次；原始记录全部保留，统计时只选择连续命中八阶段的decode轮次。

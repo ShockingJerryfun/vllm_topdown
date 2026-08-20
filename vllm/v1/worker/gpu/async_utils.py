@@ -5,12 +5,33 @@ import contextlib
 import numpy as np
 import torch
 
+from kperf_instrument import kperf_begin, kperf_finish
 from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsTensors, ModelRunnerOutput
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
 
 
 class AsyncOutput(AsyncModelRunnerOutput):
     def __init__(
+        self,
+        model_runner_output: ModelRunnerOutput,
+        sampler_output: SamplerOutput,
+        num_sampled_tokens: torch.Tensor,
+        main_stream: torch.cuda.Stream,
+        copy_stream: torch.cuda.Stream,
+    ):
+        kperf_begin("async_output_init")
+        try:
+            self._init_inner(
+                model_runner_output,
+                sampler_output,
+                num_sampled_tokens,
+                main_stream,
+                copy_stream,
+            )
+        finally:
+            kperf_finish("async_output_init")
+
+    def _init_inner(
         self,
         model_runner_output: ModelRunnerOutput,
         sampler_output: SamplerOutput,

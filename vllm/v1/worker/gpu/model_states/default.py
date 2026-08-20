@@ -5,6 +5,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from kperf_instrument import kperf_begin, kperf_finish
 from vllm.compilation.breakable_cudagraph import is_breakable_cudagraph_enabled
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
@@ -131,6 +132,30 @@ class DefaultModelState(ModelState):
         return model_inputs
 
     def prepare_attn(
+        self,
+        input_batch: InputBatch,
+        cudagraph_mode: CUDAGraphMode,
+        block_tables: tuple[torch.Tensor, ...],
+        slot_mappings: torch.Tensor,
+        attn_groups: list[list[AttentionGroup]],
+        kv_cache_config: KVCacheConfig,
+        for_capture: bool = False,
+    ) -> dict[str, Any]:
+        kperf_begin("prepare_attn_model_state")
+        try:
+            return self._prepare_attn_inner(
+                input_batch,
+                cudagraph_mode,
+                block_tables,
+                slot_mappings,
+                attn_groups,
+                kv_cache_config,
+                for_capture,
+            )
+        finally:
+            kperf_finish("prepare_attn_model_state")
+
+    def _prepare_attn_inner(
         self,
         input_batch: InputBatch,
         cudagraph_mode: CUDAGraphMode,

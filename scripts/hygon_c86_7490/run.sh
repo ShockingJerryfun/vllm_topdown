@@ -44,7 +44,7 @@ while IFS='|' read -r label codes names; do
     RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$names"
     "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label" \
         --event-names "$names" \
-        --expected-calls "${RANDOM_OUTPUT_LEN:-100}"
+        --expected-calls "$(( ${RANDOM_OUTPUT_LEN:-100} - 1 ))"
 done <<'EOF'
 base|0x76,0xc0,0xc2,0xc3,0xc1|cycles,instructions,branches,branch_misses,retired_uops
 uops_ls|0x76,0xc0,0x03aa,0xc1,0x0729|cycles,instructions,dispatched_uops,retired_uops,ls_ops_dispatched

@@ -11,16 +11,18 @@ from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 STAGES = (
-    "update_states",
+    "add_requests",
     "prepare_inputs",
-    "forward",
-    "compute_logits",
+    "prepare_attn_runner",
+    "prepare_attn_model_state",
+    "run_fullgraph",
     "sample",
-    "bookkeeping",
+    "async_output_init",
+    "postprocess_sampled",
 )
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 ROW_PATTERN = re.compile(
-    r"KPERF,(?P<stage>update_states|prepare_inputs|forward|compute_logits|sample|bookkeeping),"
+    r"KPERF,(?P<stage>" + "|".join(map(re.escape, STAGES)) + r"),"
     r"(?P<call>\d+),(?P<duration>\d+(?:\.\d+)?),(?P<enabled>\d+),"
     r"(?P<running>\d+),(?P<valid>[01]),(?P<counts>\d+(?:,\d+)*)\s*$"
 )
@@ -74,32 +76,54 @@ def validate(
         raise ValueError("no stage rows found")
 
 
-def selected_rows(
-    stage: str,
+def select_decode_rows(
     rows: dict[str, list[dict[str, object]]],
-) -> list[dict[str, object]]:
-    stage_rows = rows[stage]
-    if stage == "update_states" and rows["sample"]:
-        stage_rows = stage_rows[: len(rows["sample"])]
-    return stage_rows[1:]
+) -> dict[str, list[dict[str, object]]]:
+    ordered = sorted(
+        (
+            (int(row["global_call"]), stage, row)
+            for stage in STAGES
+            for row in rows[stage]
+        ),
+        key=lambda item: item[0],
+    )
+    anchor_offset = STAGES.index("run_fullgraph")
+    selected: dict[str, list[dict[str, object]]] = {
+        stage: [] for stage in STAGES
+    }
+    for index, (_, stage, _) in enumerate(ordered):
+        if stage != "run_fullgraph":
+            continue
+        start = index - anchor_offset
+        if start < 0:
+            continue
+        window = ordered[start : start + len(STAGES)]
+        if [item[1] for item in window] != list(STAGES):
+            continue
+        calls = [item[0] for item in window]
+        if calls != list(range(calls[0], calls[0] + len(STAGES))):
+            continue
+        for _, window_stage, row in window:
+            selected_row = dict(row)
+            selected_row["sequence"] = len(selected[window_stage]) + 1
+            selected[window_stage].append(selected_row)
+    return selected
 
 
 def quality_status(
-    stage: str,
     expected: int,
     raw_count: int,
+    selected_count: int,
     valid_count: int,
     invalid_count: int,
 ) -> str:
     if raw_count == 0:
         return "missing"
-    if valid_count == 0:
-        return "no_valid_rows"
+    if selected_count == 0:
+        return "no_decode_rows"
     if invalid_count:
         return "invalid_rows"
-    if stage == "update_states" and raw_count == expected + 1:
-        return "extra_tail"
-    if raw_count != expected:
+    if selected_count != expected or valid_count != expected:
         return "count_changed"
     return "ok"
 
@@ -114,6 +138,7 @@ def write_csvs(
     parsed_dir = run_dir / "parsed"
     raw_dir.mkdir()
     parsed_dir.mkdir()
+    decode_rows = select_decode_rows(rows)
     headers = [
         "sequence",
         "global_call",
@@ -125,7 +150,7 @@ def write_csvs(
     ]
     quality: list[list[object]] = []
     for stage in STAGES:
-        selected = selected_rows(stage, rows)
+        selected = decode_rows[stage]
         for output_dir, output_rows in ((raw_dir, rows[stage]), (parsed_dir, selected)):
             with (output_dir / f"{stage}.csv").open(
                 "w", newline="", encoding="utf-8"
@@ -144,9 +169,9 @@ def write_csvs(
                 valid_count,
                 invalid_count,
                 quality_status(
-                    stage,
                     expected_calls,
                     len(rows[stage]),
+                    len(selected),
                     valid_count,
                     invalid_count,
                 ),
@@ -159,7 +184,7 @@ def write_csvs(
         writer.writerow(
             [
                 "stage",
-                "expected_raw",
+                "expected_selected",
                 "raw",
                 "selected",
                 "valid",
@@ -168,6 +193,10 @@ def write_csvs(
             ]
         )
         writer.writerows(quality)
+
+    failures = [row for row in quality if row[-1] != "ok"]
+    if failures:
+        raise ValueError(f"decode stage validation failed: {failures}")
 
 
 def main() -> int:

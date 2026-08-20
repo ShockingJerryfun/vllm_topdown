@@ -10,12 +10,14 @@ from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 STAGES = (
-    "update_states",
+    "add_requests",
     "prepare_inputs",
-    "forward",
-    "compute_logits",
+    "prepare_attn_runner",
+    "prepare_attn_model_state",
+    "run_fullgraph",
     "sample",
-    "bookkeeping",
+    "async_output_init",
+    "postprocess_sampled",
 )
 GROUPS = (
     "topdown",
@@ -176,7 +178,7 @@ def format_value(metric: str, value: float | None) -> str:
 def write_quality(root: Path) -> None:
     fields = (
         "stage",
-        "expected_raw",
+        "expected_selected",
         "raw",
         "selected",
         "valid",

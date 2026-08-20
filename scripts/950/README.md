@@ -1,4 +1,4 @@
-# 鲲鹏950六阶段采集
+# 鲲鹏950八阶段采集
 
 本目录沿用公共的 `kperf_instrument.py`、`scripts/run_one.sh`和
 `scripts/parse_run.py`，只定义950事件组与汇总公式。每组最多6个事件，
@@ -41,7 +41,7 @@ Kunpeng DevKit的Topdown结果交叉检查。汇总脚本不裁剪或强行归�
 宿主机执行：
 
 ```bash
-CHIP=950 bash /home/f00955680/vllm_fj/scripts/run_topdown.sh
+CHIP=950 bash /home/fj/vllm_fj/scripts/run_topdown.sh
 ```
 
 运行前根据实际容器、项目和模型路径设置 `CONTAINER`、`PROJECT`和

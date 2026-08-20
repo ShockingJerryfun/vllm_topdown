@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+from kperf_instrument import kperf_begin, kperf_finish
 from vllm.compilation.breakable_cudagraph import (
     BreakableCUDAGraphWrapper,
     is_breakable_cudagraph_enabled,
@@ -565,6 +566,15 @@ class ModelCudaGraphManager(CudaGraphManager):
         super().capture(create_forward_fn, progress_bar_desc)
 
     def run_fullgraph(
+        self, desc: BatchExecutionDescriptor
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | IntermediateTensors:
+        kperf_begin("run_fullgraph")
+        try:
+            return self._run_fullgraph_inner(desc)
+        finally:
+            kperf_finish("run_fullgraph")
+
+    def _run_fullgraph_inner(
         self, desc: BatchExecutionDescriptor
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | IntermediateTensors:
         """Replay a captured FULL cudagraph and return hidden states."""
