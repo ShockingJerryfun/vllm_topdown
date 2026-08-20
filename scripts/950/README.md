@@ -38,6 +38,13 @@ Kunpeng DevKit的Topdown结果交叉检查。汇总脚本不裁剪或强行归�
 - [openEuler Arm64 PMU架构事件表](https://gitee.com/openeuler/kernel/blob/OLK-6.6/tools/perf/pmu-events/arch/arm64/common-and-microarch.json)
 - [Kunpeng DevKit Topdown指标定义](https://www.hikunpeng.com/document/detail/en/kunpengdevps/userguide/cliuserguide/KunpengDevKitCli_0254.html)
 
+容器内先安装一次报表依赖：
+
+```bash
+/opt/vllm/bin/python3 -m pip install \
+  -r /home/fj/vllm_fj/scripts/requirements-report.txt
+```
+
 宿主机执行：
 
 ```bash
@@ -45,4 +52,5 @@ CHIP=950 bash /home/fj/vllm_fj/scripts/run_topdown.sh
 ```
 
 运行前根据实际容器、项目和模型路径设置 `CONTAINER`、`PROJECT`和
-`MODEL`。输出位于 `results/950/<RUN_ID>`。
+`MODEL`。输出位于 `results/950/<RUN_ID>`，默认最终工作簿为
+`950_vllm0.26_qwen3_7k100.xlsx`。

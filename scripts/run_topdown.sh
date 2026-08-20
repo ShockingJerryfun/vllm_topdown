@@ -24,6 +24,8 @@ docker exec \
     -e MODEL="$MODEL" \
     -e VLLM_BIN="$VLLM_BIN" \
     -e GPU_ID="$GPU_ID" \
+    -e MODEL_SHORT="${MODEL_SHORT:-qwen3}" \
+    -e VLLM_VERSION_SHORT="${VLLM_VERSION_SHORT:-0.26}" \
     -e SERVER_FLAGS="${SERVER_FLAGS:---async-scheduling}" \
     -e MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}" \
     -e MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-163840}" \
@@ -37,4 +39,7 @@ docker exec \
 test -s "$RUN_ROOT/summary.csv"
 test -s "$RUN_ROOT/collection_quality.csv"
 test -s "$RUN_ROOT/hotspot/perf_report.txt"
-printf '[%s] completed: %s\n' "$CHIP" "$RUN_ROOT"
+REPORT=$(find "$RUN_ROOT" -maxdepth 1 -type f -name '*.xlsx' -print -quit)
+test -n "$REPORT"
+test -s "$REPORT"
+printf '[%s] completed: %s\nreport: %s\n' "$CHIP" "$RUN_ROOT" "$REPORT"

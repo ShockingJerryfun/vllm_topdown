@@ -1,0 +1,105 @@
+{
+  "groups": [
+    {
+      "name": "topdown",
+      "suffix": "TOPDOWN",
+      "events": ["0x0011", "0x0008", "0x1f21", "0x001b"],
+      "event_headers": ["0x0011 (cycles)", "0x0008", "0x1f21", "0x001b"],
+      "derived": [
+        {"name": "retire", "number_format": "0.00%", "formula": "=IFERROR({0x0008}/(8*{0x0011}),\"\")"},
+        {"name": "frontend_bound", "number_format": "0.00%", "formula": "=IFERROR({0x1f21}/(8*{0x0011}),\"\")"},
+        {"name": "bad_spec", "number_format": "0.00%", "formula": "=IFERROR(({0x001b}-{0x0008})/(8*{0x0011}),\"\")"},
+        {"name": "backend_bound", "number_format": "0.00%", "formula": "=IFERROR(1-{retire}-{frontend_bound}-{bad_spec},\"\")"}
+      ]
+    },
+    {
+      "name": "icache",
+      "suffix": "ICACHE",
+      "events": ["0x0008", "0x0001", "0x0014", "0x0027", "0x0028"],
+      "derived": [
+        {"name": "l1i_miss", "number_format": "0.00%", "formula": "=IFERROR({0x0001}/{0x0014},\"\")"},
+        {"name": "l1i_mpki", "number_format": "0.00", "formula": "=IFERROR({0x0001}/{0x0008}*1000,\"\")"},
+        {"name": "l2i_miss", "number_format": "0.00%", "formula": "=IFERROR({0x0028}/{0x0027},\"\")"},
+        {"name": "l2i_mpki", "number_format": "0.00", "formula": "=IFERROR({0x0028}/{0x0008}*1000,\"\")"}
+      ]
+    },
+    {
+      "name": "dcache",
+      "suffix": "DCACHE",
+      "events": ["0x0008", "0x0003", "0x0004", "0x0017", "0x0016"],
+      "derived": [
+        {"name": "l1d_miss", "number_format": "0.00%", "formula": "=IFERROR({0x0003}/{0x0004},\"\")"},
+        {"name": "l1d_mpki", "number_format": "0.00", "formula": "=IFERROR({0x0003}/{0x0008}*1000,\"\")"},
+        {"name": "l2d_miss", "number_format": "0.00%", "formula": "=IFERROR({0x0017}/{0x0016},\"\")"},
+        {"name": "l2d_mpki", "number_format": "0.00", "formula": "=IFERROR({0x0017}/{0x0008}*1000,\"\")"}
+      ]
+    },
+    {
+      "name": "l3",
+      "suffix": "L3",
+      "events": ["0x0008", "0x002a", "0x002b"],
+      "derived": [
+        {"name": "l3_miss", "number_format": "0.00%", "formula": "=IFERROR({0x002a}/{0x002b},\"\")"},
+        {"name": "l3_mpki", "number_format": "0.00", "formula": "=IFERROR({0x002a}/{0x0008}*1000,\"\")"}
+      ]
+    },
+    {
+      "name": "tlb1",
+      "suffix": "TLB1",
+      "events": ["0x0008", "0x0002", "0x0026", "0x0005", "0x0025"],
+      "derived": [
+        {"name": "itlb_miss", "number_format": "0.00%", "formula": "=IFERROR({0x0002}/{0x0026},\"\")"},
+        {"name": "itlb_mpki", "number_format": "0.00", "formula": "=IFERROR({0x0002}/{0x0008}*1000,\"\")"},
+        {"name": "dtlb_miss", "number_format": "0.00%", "formula": "=IFERROR({0x0005}/{0x0025},\"\")"},
+        {"name": "dtlb_mpki", "number_format": "0.00", "formula": "=IFERROR({0x0005}/{0x0008}*1000,\"\")"}
+      ]
+    },
+    {
+      "name": "tlb2",
+      "suffix": "TLB2",
+      "events": ["0x0008", "0x002d", "0x002e", "0x002f", "0x0030"],
+      "derived": [
+        {"name": "stlb_miss", "number_format": "0.00%", "formula": "=IFERROR(({0x002d}+{0x002e})/({0x002f}+{0x0030}),\"\")"},
+        {"name": "stlb_mpki", "number_format": "0.00", "formula": "=IFERROR(({0x002d}+{0x002e})/{0x0008}*1000,\"\")"}
+      ]
+    },
+    {
+      "name": "branch",
+      "suffix": "BRANCH",
+      "events": ["0x0008", "0x0021", "0x0022"],
+      "derived": [
+        {"name": "br_missrate", "number_format": "0.00%", "formula": "=IFERROR({0x0022}/{0x0021},\"\")"},
+        {"name": "br_mpki", "number_format": "0.00", "formula": "=IFERROR({0x0022}/{0x0008}*1000,\"\")"}
+      ]
+    },
+    {
+      "name": "imix",
+      "suffix": "IMIX",
+      "events": ["0x001b", "0x0070", "0x0073", "0x8005", "0x0078"],
+      "semantic_headers": ["inst_spec", "ld_spec", "dp_spec", "ase_spec", "br_imm_spec"],
+      "derived": [
+        {"name": "ld_imix", "number_format": "0.00%", "formula": "=IFERROR({0x0070}/{0x001b},\"\")"},
+        {"name": "dp_imix", "number_format": "0.00%", "formula": "=IFERROR({0x0073}/{0x001b},\"\")"},
+        {"name": "ase_imix", "number_format": "0.00%", "formula": "=IFERROR({0x8005}/{0x001b},\"\")"},
+        {"name": "br_imm_spec", "number_format": "0.00%", "formula": "=IFERROR({0x0078}/{0x001b},\"\")"},
+        {"name": "合计", "number_format": "0.00%", "formula": "=SUM({ld_imix}:{br_imm_spec})"},
+        {"name": "其他", "number_format": "0.00%", "formula": "=1-{合计}"}
+      ]
+    },
+    {
+      "name": "imix2",
+      "suffix": "IMIX2",
+      "events": ["0x001b", "0x0071", "0x0079", "0x007a", "0x0075", "0x8006"],
+      "semantic_headers": ["inst_spec", "st_spec", "br_ret_spec", "br_ind_spec", "vfp_spec", "sve_spec"],
+      "derived": [
+        {"name": "st_imix", "number_format": "0.00%", "formula": "=IFERROR({0x0071}/{0x001b},\"\")"},
+        {"name": "br_ret_imix", "number_format": "0.00%", "formula": "=IFERROR({0x0079}/{0x001b},\"\")"},
+        {"name": "br_ind_imix", "number_format": "0.00%", "formula": "=IFERROR({0x007a}/{0x001b},\"\")"},
+        {"name": "vfp_imix", "number_format": "0.00%", "formula": "=IFERROR({0x0075}/{0x001b},\"\")"},
+        {"name": "sve_imix", "number_format": "0.00%", "formula": "=IFERROR({0x8006}/{0x001b},\"\")"},
+        {"name": "合计", "number_format": "0.00%", "formula": "=SUM({st_imix}:{sve_imix})"},
+        {"name": "其他", "number_format": "0.00%", "formula": "=1-{合计}"}
+      ]
+    }
+  ]
+}

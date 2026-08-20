@@ -1,128 +1,89 @@
-# vLLM 0.26.0 默认 V2 六阶段 PMU 打点
+# vLLM 0.26.0 默认V2 Decode八阶段PMU采集
 
-本文描述 `vllm_0.26_perf` 当前代码中的实际探针。该分支使用0.26的默认V2
-runner：`vllm/v1/worker/gpu/model_runner.py`，不使用0.11的
-`vllm/v1/worker/gpu_model_runner.py`。
+本分支只对真实decode路径中的八个串行函数做CPU PMU打点。探针在函数外层
+调用 `kperf_begin()`，并在 `finally` 中调用 `kperf_finish()`；原函数主体放在
+对应的 `*_inner()` 中，八个统计区间不互相嵌套。
 
-## 打点本质
+## 阶段边界
 
-`kperf_instrument.py` 通过 Linux `perf_event_open(2)` 为当前执行线程打开
-`PERF_TYPE_RAW` PMU事件。它不启动 `perf stat` 子进程，也不是GPU计数器：
-
-1. `kperf_begin(stage)` 对事件组执行 reset、enable，并记录开始时间。
-2. 被测代码在原位置执行。
-3. `kperf_finish(stage)` 在 `finally` 中执行 disable、group read。
-4. 每次输出一行
-   `KPERF,阶段,调用序号,时间(us),time_enabled,time_running,valid,事件计数...`。
-
-已有完整函数使用“外层函数加探针、原函数体移入 `*_inner()`”的形式：
-
-```python
-kperf_begin("stage")
-try:
-    return stage_inner(...)
-finally:
-    kperf_finish("stage")
-```
-
-0.26中有三个阶段原来不是独立的完整区间，因此按同一概念边界抽取：
-`update_states` 从 `execute_model()` 开头的状态操作抽出，`sample` 只抽取
-采样器或拒绝采样器，`bookkeeping` 从采样后的worker处理尾段抽出。没有把这
-三个区间扩大到相邻阶段。
-
-这些计数是CPU PMU计数。尤其是 `forward`，结果表示Python/C++主机线程进行
-模型调用、CUDA提交以及同步等待时消耗的CPU事件，不表示A100内部的GPU cycles。
-热点采集则是另一条独立流程：`scripts/run_one.sh` 在 `KPERF_ENABLE=0`
-时调用 `perf record`，生成 `perf.data` 和 `perf_report.txt`。
-
-## 六阶段实际位置和边界
-
-以下行号以当前 `vllm_0.26_perf` 分支为准。
-
-| 阶段 | 探针和被测函数 | 标准Qwen3-8B调用位置 | 本阶段做什么 |
+| 顺序 | 阶段名 | 外层函数 | 主要内容 |
 | --- | --- | --- | --- |
-| `update_states` | `vllm/v1/worker/gpu/model_runner.py:875` `_update_states()`；实际内容在第882行 `_update_states_inner()` | `execute_model()` 第1206行 | 根据scheduler输出完成/释放请求，加入新请求，更新运行中请求，并提交block table的暂存写入 |
-| `prepare_inputs` | `model_runner.py:890` `prepare_inputs()`；实际内容在第899行 `_prepare_inputs_inner()` | `execute_model()` 第1251行 | 排列本轮请求，计算token数量、position、logits索引和spec-decode信息，并准备/拷贝模型输入buffer |
-| `forward` | `vllm/model_executor/models/qwen3.py:320` `Qwen3ForCausalLM.forward()`；实际内容在第338行 `_forward_inner()` | runner第1401行 `self.model(**model_inputs)` 进入 | 执行Qwen3主体网络，从token/position得到hidden states；包含embedding、Transformer层、attention和MLP，不包含LM head、采样与后处理 |
-| `compute_logits` | `qwen3.py:350` `Qwen3ForCausalLM.compute_logits()`；实际内容在第360行 `_compute_logits_inner()` | runner `sample()` 第1117行 | 对待采样hidden states执行LM head和logits processor，得到词表logits |
-| `sample` | `model_runner.py:1132` `_sample()`；实际内容在第1143行 `_sample_inner()` | 外层 `sample()` 第1128行 | 普通路径调用sampler选择token；spec decode路径调用rejection sampler决定接受/拒绝的token |
-| `bookkeeping` | `model_runner.py:1498` `_bookkeeping()`；实际内容在第1526行 `_bookkeeping_inner()` | `execute_model()` 第1486行 | 处理prompt logprobs、构造输出、发起异步D2H拷贝、更新请求状态、可选生成draft token并执行KV connector后处理 |
+| 1 | `add_requests` | `GPUModelRunner.add_requests()` | 把scheduler的新请求加入GPU侧持久请求状态 |
+| 2 | `prepare_inputs` | `GPUModelRunner.prepare_inputs()` | 准备本轮token、position和模型输入buffer |
+| 3 | `prepare_attn_runner` | `GPUModelRunner.prepare_attn()` | runner侧attention输入与metadata准备 |
+| 4 | `prepare_attn_model_state` | `DefaultModelState.prepare_attn()` | model state侧attention metadata准备 |
+| 5 | `run_fullgraph` | `CUDAGraphWrapper.run_fullgraph()` | replay完整CUDA Graph |
+| 6 | `sample` | `GPUModelRunner.sample()` | logits处理与GPU采样 |
+| 7 | `async_output_init` | `AsyncOutput.__init__()` | 创建异步输出并发起结果回传 |
+| 8 | `postprocess_sampled` | `GPUModelRunner.postprocess_sampled()` | 更新请求状态并整理采样结果 |
 
-六阶段在本次普通文本生成路径中的顺序是：
+本次采集配置以 `run_fullgraph` 为八阶段调用对齐锚点，只适用于走完整Graph的
+decode轮次；eager和piecewise路径不属于这套八阶段统计口径。所有原始调用仍写入
+明细页，第一轮prefill和未对齐调用不会进入汇总值。
 
-```text
-execute_model()
-  update_states
-  prepare_inputs
-  forward
-  sample()
-    compute_logits
-    grammar处理（不在六阶段区间内）
-    sample
-  bookkeeping
-```
+这些数据是当前Python/C++执行线程的CPU PMU计数，反映主机调度、CUDA提交和
+同步等待等CPU行为，不代表GPU内部cycles或GPU kernel效率。热点函数是独立的
+`perf record` 采集，脚本优先把容器内完成符号解析的报告写入工作簿。
 
-具体边界如下：
+## 脚本结构
 
-- `prepare_inputs` 不包含紧随其后的 `prepare_attn()`、model state预处理和
-  attention metadata后续准备。
-- 新基线的 `forward` 和 `compute_logits` 直接打在Qwen3模型实现中，只覆盖
-  `Qwen3ForCausalLM`；分支同时保留原有Qwen2探针，但两种模型不会同时进入。
-- `sample` 不包含第1117行的 `compute_logits`，也不包含第1118至1126行的
-  grammar bitmask处理。
-- `bookkeeping` 包含 `AsyncOutput` 的创建和异步拷贝发起，但不包含
-  `vllm/v1/worker/gpu/async_utils.py:49` 的 `AsyncOutput.get_output()`，
-  因而不包含之后等待copy event和将结果整理为Python列表的时间。
+- `scripts/run_topdown.sh`：宿主机统一入口。
+- `scripts/run_one.sh`：容器内启动服务、发送请求并采集单个事件组或热点。
+- `scripts/parse_run.py`：保留全部原始记录并标记prefill、decode和未对齐调用。
+- `scripts/build_xlsx.py`：公共Excel生成器。
+- `scripts/<芯片>/run.sh`：芯片采集流程。
+- `scripts/<芯片>/report_config.json`：芯片事件列、公式和工作表配置。
 
-## 与0.11打点的区别
+目前支持 `920b`、`950` 和 `hygon_c86_7490`。公共生成逻辑复用，芯片事件和
+公式仍由各自目录维护。
 
-| 对比项 | vLLM 0.11.2 V1 | vLLM 0.26.0 默认V2 |
-| --- | --- | --- |
-| runner文件 | `vllm/v1/worker/gpu_model_runner.py` | `vllm/v1/worker/gpu/model_runner.py` |
-| 状态更新 | 包裹原有 `_update_states()` | 将V2 `execute_model()` 内六项状态操作抽成新的 `_update_states()` 区间 |
-| 输入准备 | 包裹 `_prepare_inputs()` | 包裹V2 `prepare_inputs()`；不包含独立的 `prepare_attn()` |
-| forward | 在runner的 `_model_forward()` 外层打点，适用于该runner调用的模型 | 直接在 `Qwen3ForCausalLM.forward()` 打点，边界更贴近Qwen3模型主体 |
-| compute_logits | 在 `Qwen2ForCausalLM.compute_logits()` 打点 | 在 `Qwen3ForCausalLM.compute_logits()` 打点，调用位于V2 runner的 `sample()` |
-| sample | `sample_tokens()` 中的 `_sample()` | 从V2 `sample()` 中单独抽出sampler/rejection-sampler区间 |
-| bookkeeping | 同步 `_bookkeeping_sync()` | worker侧 `_bookkeeping()`，发起异步输出复制，但不等待 `get_output()` |
+## 使用方法
 
-两个版本对齐的是“推理阶段的概念边界”，不是强求同名函数或相同行号。0.26的
-`compute_logits` 位于外层 `sample()` 中，但 `sample` 探针从
-`self._sample()` 才开始，所以普通路径下两者不嵌套。
-
-## 适用范围和嵌套限制
-
-`kperf_instrument.py` 只有一组全局 `START_NS`、`NAME` 和FD，不维护调用栈，
-因此不支持探针嵌套。当前输入7000、输出100、未请求prompt logprobs的Qwen3-8B
-测试中，六阶段按上面的顺序执行，没有相互嵌套。
-
-如果请求开启 `prompt_logprobs`，`_bookkeeping_inner()` 第1539至1546行会把
-`self.model.compute_logits` 传给prompt-logprobs worker，后者可能在
-`bookkeeping` 区间内再次进入 `compute_logits`。这种工作负载不能直接使用
-当前单全局状态探针，必须先改成可嵌套采集或关闭prompt logprobs。
-
-## 测试脚本和输出
-
-公共采集器、单轮启动器和解析器分别是 `kperf_instrument.py`、
-`scripts/run_one.sh` 和 `scripts/parse_run.py`。芯片目录只保存各自的事件组、
-公式、汇总脚本和 `run.sh`。`scripts/920b/run.sh`、`scripts/950/run.sh` 和
-`scripts/hygon_c86_7490/run.sh` 都使用0.26默认V2 runner。新基线固定为
-Qwen3-8B、Python 3.13、输入7000、输出100、并发1、TP=1、BF16。
-
-宿主机统一使用 `scripts/run_topdown.sh`，由 `CHIP` 明确选择已有芯片目录：
+容器内第一次使用时安装唯一的报表依赖：
 
 ```bash
-CHIP=hygon_c86_7490 bash /home/f00955680/vllm_fj/scripts/run_topdown.sh
+/opt/vllm/bin/python3 -m pip install \
+  -r /home/fj/vllm_fj/scripts/requirements-report.txt
 ```
 
-鲲鹏950使用 `CHIP=950`；当前已完成事件与公式配置，真机验证状态
-见 `scripts/950/README.md`。
+宿主机选择芯片并执行：
 
-解析时仅在统计口径中排除每阶段第一条prefill，并排除未与其余阶段对齐的
-`update_states` 尾部记录；原始记录仍保留。输出数量不再作为硬性成功条件，
-预期数量、实际数量、有效数量和状态写入 `collection_quality.csv`。Hygon结果目录是
-`/home/f00955680/vllm_fj/results/hygon_c86_7490/<RUN_ID>`：
+```bash
+CHIP=920b bash /home/fj/vllm_fj/scripts/run_topdown.sh
+CHIP=950 bash /home/fj/vllm_fj/scripts/run_topdown.sh
+CHIP=hygon_c86_7490 bash /home/fj/vllm_fj/scripts/run_topdown.sh
+```
 
-- `summary.csv`：六阶段汇总。
-- 各事件组目录：原始日志和解析后的阶段数据。
-- `hotspot/perf.data`、`hotspot/perf_report.txt`：未做阶段归并的原始热点结果。
+容器名、项目路径、模型路径不同，直接通过环境变量覆盖：
+
+```bash
+CONTAINER=qwen3_container_fj \
+PROJECT=/home/fj/vllm_fj \
+MODEL=/home/fj/Qwen3-8B \
+CHIP=920b \
+bash /home/fj/vllm_fj/scripts/run_topdown.sh
+```
+
+默认输入7000、输出100、模型简写 `qwen3`、版本简写 `0.26`。最终文件按
+“芯片_vLLM版本_模型简写_输入输出”命名，例如：
+
+```text
+920b_vllm0.26_qwen3_7k100.xlsx
+```
+
+可通过 `MODEL_SHORT` 和 `VLLM_VERSION_SHORT` 修改文件名中的模型与版本。
+
+## Excel内容
+
+- 第一个sheet固定为 `汇总`，只汇总对齐的decode调用；CPU利用率未采集时显示
+  `未采集`。
+- 第二个sheet固定为 `热点函数`，使用容器内 `perf report` 解析后的报告。
+- 其余明细sheet保留全部原始记录，包括prefill、decode和未对齐调用。
+- `prepare_attn` 明细包含runner与model state两个区段；`output` 明细包含
+  `async_output_init` 与 `postprocess_sampled` 两个区段。
+- 普通sheet冻结首行和首列；热点正文保持左对齐。
+- 920b和950默认生成56个sheet，Hygon默认生成38个sheet。
+
+每次运行结果位于 `results/<芯片>/<RUN_ID>/`，包含原始日志、解析CSV、
+`summary.csv`、`collection_quality.csv`、热点文件和最终Excel。只有最终Excel
+存在且非空时，宿主机入口才报告成功。

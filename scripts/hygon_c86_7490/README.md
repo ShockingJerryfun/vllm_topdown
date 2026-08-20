@@ -31,6 +31,13 @@ Core PMU 采集。
 汇总页中的前后端指标是独立诊断比例，不是 Intel Topdown，不能相加为
 100%。L3/DF 属于共享 uncore PMU，在事件语义确认前保持“未采集”。
 
+容器内先安装一次报表依赖：
+
+```bash
+/opt/vllm/bin/python3 -m pip install \
+  -r /home/fj/vllm_fj/scripts/requirements-report.txt
+```
+
 宿主机执行：
 
 ```bash
@@ -41,3 +48,4 @@ CHIP=hygon_c86_7490 bash /home/fj/vllm_fj/scripts/run_topdown.sh
 `max-model-len=8192`、`gpu-memory-utilization=0.8`。默认启用
 `--async-scheduling`，可通过 `SERVER_FLAGS` 覆盖。输出100对应99个完整
 decode轮次；原始记录全部保留，统计时只选择连续命中八阶段的decode轮次。
+默认最终工作簿为 `hygon_c86_7490_vllm0.26_qwen3_7k100.xlsx`。

@@ -8,6 +8,10 @@ SOURCE_ROOT=$(dirname "$COMMON_DIR")
 RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/hygon_c86_7490}
 PYTHON_BIN=${PYTHON_BIN:-$(dirname "${VLLM_BIN:-vllm}")/python}
 [[ -x "$PYTHON_BIN" ]] || PYTHON_BIN=python3
+"$PYTHON_BIN" -c 'import openpyxl' >/dev/null 2>&1 || {
+    printf 'Missing openpyxl; install scripts/requirements-report.txt\n' >&2
+    exit 6
+}
 [[ ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
 install -d -m 755 "$RUN_ROOT"
 
@@ -56,4 +60,11 @@ EOF
 
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
 "$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT"
+"$PYTHON_BIN" "$COMMON_DIR/build_xlsx.py" "$RUN_ROOT" \
+    --config "$SCRIPT_DIR/report_config.json" \
+    --chip "$(basename "$SCRIPT_DIR")" \
+    --version "${VLLM_VERSION_SHORT:-0.26}" \
+    --model-short "${MODEL_SHORT:-qwen3}" \
+    --input-len "${RANDOM_INPUT_LEN:-7000}" \
+    --output-len "${RANDOM_OUTPUT_LEN:-100}"
 printf '[hygon] completed: %s\n' "$RUN_ROOT"

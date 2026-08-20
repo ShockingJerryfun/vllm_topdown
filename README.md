@@ -1,35 +1,32 @@
 <!-- markdownlint-disable MD001 MD041 -->
 
-# 本分支：vLLM 0.26.0 默认V2六阶段PMU打点
+# 本分支：vLLM 0.26.0 默认V2 Decode八阶段PMU打点
 
-当前基线为Qwen3-8B、Python 3.13、PyTorch 2.11.0。Qwen3模型阶段打点位于
-`qwen3.py`；原有Qwen2探针只作为历史模型兼容保留。
+当前基线为Qwen3-8B、Python 3.13、PyTorch 2.11.0。分支按真实decode串行路径
+采集下面八个CPU PMU区间：
 
-`vllm_0.26_perf` 在默认V2 runner上采集六个与0.11同概念的阶段。它通过
-`kperf_instrument.py` 直接调用 Linux `perf_event_open(2)`，在阶段入口
-reset/enable原始CPU PMU事件，在 `finally` 中disable/read并输出时间和计数；
-它不是GPU计数器，也不是通过 `perf stat` 子进程实现。
+| 阶段 | 打点函数 |
+| --- | --- |
+| `add_requests` | `GPUModelRunner.add_requests()` |
+| `prepare_inputs` | `GPUModelRunner.prepare_inputs()` |
+| `prepare_attn_runner` | `GPUModelRunner.prepare_attn()` |
+| `prepare_attn_model_state` | `DefaultModelState.prepare_attn()` |
+| `run_fullgraph` | `CUDAGraphWrapper.run_fullgraph()` |
+| `sample` | `GPUModelRunner.sample()` |
+| `async_output_init` | `AsyncOutput.__init__()` |
+| `postprocess_sampled` | `GPUModelRunner.postprocess_sampled()` |
 
-| 阶段 | 当前分支打点位置 | 阶段含义 |
-| --- | --- | --- |
-| `update_states` | `vllm/v1/worker/gpu/model_runner.py:875` | 根据scheduler输出完成、释放、加入并更新请求状态 |
-| `prepare_inputs` | `model_runner.py:890` | 准备token、position、索引、spec信息和模型输入buffer |
-| `forward` | `vllm/model_executor/models/qwen3.py:320` | 执行Qwen3主体网络并产生hidden states |
-| `compute_logits` | `qwen3.py:350` | 执行LM head和logits processor产生词表logits |
-| `sample` | `model_runner.py:1132` | 执行普通sampler或spec-decode rejection sampler |
-| `bookkeeping` | `model_runner.py:1498` | 处理采样后状态、输出复制、draft token和KV connector后处理 |
+`kperf_instrument.py` 直接调用 Linux `perf_event_open(2)`，记录当前CPU线程，
+不是GPU计数器。八个区间不互相嵌套，解析时保留全部原始记录，只用对齐的
+decode调用计算汇总。
 
-`prepare_inputs` 不包含 `prepare_attn()`；`sample` 不包含logits和grammar；
-`bookkeeping` 不包含之后的 `AsyncOutput.get_output()` 等待。标准Qwen3-8B
-测试的六阶段不嵌套，但开启prompt logprobs可能在 `bookkeeping` 内再次调用
-`compute_logits`，当前单全局状态采集器不支持这种嵌套。
-
-完整的函数行号、调用链、阶段边界、与0.11的差异及脚本说明见
+完整边界、采集口径和使用方法见
 [KPERF_TOPDOWN.md](KPERF_TOPDOWN.md)。
 
-公共采集代码位于根目录 `kperf_instrument.py` 和 `scripts/`；芯片目录只保留
-事件组、公式和汇总实现。宿主机通过 `CHIP=<芯片目录> scripts/run_topdown.sh`
-选择对应芯片。
+公共采集和Excel生成代码位于根目录 `kperf_instrument.py` 和 `scripts/`；
+`920b`、`950`、`hygon_c86_7490` 目录只保留各自的事件、公式和配置。
+`scripts/run_topdown.sh` 成功结束时会在结果目录直接生成最终工作簿，默认文件名
+示例为 `920b_vllm0.26_qwen3_7k100.xlsx`。
 
 ---
 
