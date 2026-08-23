@@ -25,8 +25,14 @@ Core PMU 采集。
 | uops_ls | cycles 0x76，instructions 0xc0，dispatched_uops 0x03aa，retired_uops 0xc1，ls_ops_dispatched 0x0729 |
 | frontend | cycles 0x76，instructions 0xc0，ic_dq_empty 0x0287，ic_backpressure 0x0187，l1i_fetch_misses 0x81 |
 | backend | cycles 0x76，instructions 0xc0，retire_token_stalls 0x40af，agsq_token_stalls 0x20af，alu_token_stalls 0x10af |
-| dcache | instructions 0xc0，l1d_8byte_accesses 0x40，l2_data_requests 0xc860，l2_data_misses 0x0864，l2_data_hits 0x7064 |
+| dcache | instructions 0xc0，l1d_accesses 0x40，l2_request_activity 0xe860，l2_demand_misses 0x0864，l2_demand_hits 0xf064 |
 | dtlb | instructions 0xc0，l1_dtlb_misses 0xff45，dtlb_l2_hits 0x0f45，dtlb_l2_misses 0xf045，data_page_walks 0x0346 |
+
+`0x60` 统计 L2 request activity，`0x64` 统计 L2 demand hit/miss，两者范围
+不同。报表分别输出 `L2 request activity MPKI` 和
+`L2 demand access MPKI`，不再计算二者之间的 coverage；L2 hit ratio 和
+miss ratio 均以 demand hit + miss 为分母。L1I 指标显示为
+`L1I 32B fetch-window miss MPKI`，公式保持不变。
 
 汇总页中的前后端指标是独立诊断比例，不是 Intel Topdown，不能相加为
 100%。L3/DF 属于共享 uncore PMU，在事件语义确认前保持“未采集”。

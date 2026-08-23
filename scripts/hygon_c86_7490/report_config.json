@@ -31,7 +31,7 @@
       "derived": [
         {"name": "Frontend starvation ratio", "number_format": "0.00%", "formula": "=IFERROR({ic_dq_empty}/{cycles},\"\")"},
         {"name": "Downstream backpressure", "number_format": "0.00%", "formula": "=IFERROR({ic_backpressure}/{cycles},\"\")"},
-        {"name": "L1I fetch MPKI", "number_format": "0.00", "formula": "=IFERROR({l1i_fetch_misses}/{instructions}*1000,\"\")"}
+        {"name": "L1I 32B fetch-window miss MPKI", "number_format": "0.00", "formula": "=IFERROR({l1i_fetch_misses}/{instructions}*1000,\"\")"}
       ]
     },
     {
@@ -47,14 +47,15 @@
     {
       "name": "dcache",
       "suffix": "DCACHE",
-      "events": ["instructions", "l1d_8byte_accesses", "l2_data_requests", "l2_data_misses", "l2_data_hits"],
+      "events": ["instructions", "l1d_accesses", "l2_request_activity", "l2_demand_misses", "l2_demand_hits"],
+      "event_headers": ["instructions", "L1D access", "L2 request activity", "L2 demand miss", "L2 demand hit"],
       "derived": [
-        {"name": "L1D accesses / inst", "number_format": "0.00", "formula": "=IFERROR({l1d_8byte_accesses}/{instructions},\"\")"},
-        {"name": "L2 request MPKI", "number_format": "0.00", "formula": "=IFERROR({l2_data_requests}/{instructions}*1000,\"\")"},
-        {"name": "L2 miss MPKI", "number_format": "0.00", "formula": "=IFERROR({l2_data_misses}/{instructions}*1000,\"\")"},
-        {"name": "L2 hit ratio", "number_format": "0.00%", "formula": "=IFERROR({l2_data_hits}/({l2_data_hits}+{l2_data_misses}),\"\")"},
-        {"name": "L2 miss ratio", "number_format": "0.00%", "formula": "=IFERROR({l2_data_misses}/({l2_data_hits}+{l2_data_misses}),\"\")"},
-        {"name": "L2 coverage", "number_format": "0.00%", "formula": "=IFERROR(({l2_data_hits}+{l2_data_misses})/{l2_data_requests},\"\")"}
+        {"name": "L1D accesses / inst", "number_format": "0.00", "formula": "=IFERROR({l1d_accesses}/{instructions},\"\")"},
+        {"name": "L2 request activity MPKI", "number_format": "0.00", "formula": "=IFERROR({l2_request_activity}/{instructions}*1000,\"\")"},
+        {"name": "L2 demand access MPKI", "number_format": "0.00", "formula": "=IFERROR(({l2_demand_hits}+{l2_demand_misses})/{instructions}*1000,\"\")"},
+        {"name": "L2 miss MPKI", "number_format": "0.00", "formula": "=IFERROR({l2_demand_misses}/{instructions}*1000,\"\")"},
+        {"name": "L2 hit ratio", "number_format": "0.00%", "formula": "=IFERROR({l2_demand_hits}/({l2_demand_hits}+{l2_demand_misses}),\"\")"},
+        {"name": "L2 miss ratio", "number_format": "0.00%", "formula": "=IFERROR({l2_demand_misses}/({l2_demand_hits}+{l2_demand_misses}),\"\")"}
       ]
     },
     {

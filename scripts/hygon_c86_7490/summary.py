@@ -29,7 +29,6 @@ PERCENT_METRICS = {
     "ALU resource pressure",
     "L2 hit ratio",
     "L2 miss ratio",
-    "L2 coverage",
     "L2 TLB hit ratio",
     "L2 TLB miss ratio",
     "DTLB coverage",
@@ -95,7 +94,7 @@ def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
         "LS ops / inst": ratio(uops, ("ls_ops_dispatched",), ("instructions",)),
         "Frontend starvation ratio": ratio(frontend, ("ic_dq_empty",), ("cycles",)),
         "Downstream backpressure": ratio(frontend, ("ic_backpressure",), ("cycles",)),
-        "L1I fetch MPKI": ratio(
+        "L1I 32B fetch-window miss MPKI": ratio(
             frontend, ("l1i_fetch_misses",), ("instructions",), 1000
         ),
         "Retire resource pressure": ratio(
@@ -103,21 +102,26 @@ def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
         ),
         "Address/LS pressure": ratio(backend, ("agsq_token_stalls",), ("cycles",)),
         "ALU resource pressure": ratio(backend, ("alu_token_stalls",), ("cycles",)),
-        "L1D accesses / inst": ratio(
-            dcache, ("l1d_8byte_accesses",), ("instructions",)
+        "L1D accesses / inst": ratio(dcache, ("l1d_accesses",), ("instructions",)),
+        "L2 request activity MPKI": ratio(
+            dcache, ("l2_request_activity",), ("instructions",), 1000
         ),
-        "L2 request MPKI": ratio(
-            dcache, ("l2_data_requests",), ("instructions",), 1000
+        "L2 demand access MPKI": ratio(
+            dcache,
+            ("l2_demand_hits", "l2_demand_misses"),
+            ("instructions",),
+            1000,
         ),
-        "L2 miss MPKI": ratio(dcache, ("l2_data_misses",), ("instructions",), 1000),
+        "L2 miss MPKI": ratio(dcache, ("l2_demand_misses",), ("instructions",), 1000),
         "L2 hit ratio": ratio(
-            dcache, ("l2_data_hits",), ("l2_data_hits", "l2_data_misses")
+            dcache,
+            ("l2_demand_hits",),
+            ("l2_demand_hits", "l2_demand_misses"),
         ),
         "L2 miss ratio": ratio(
-            dcache, ("l2_data_misses",), ("l2_data_hits", "l2_data_misses")
-        ),
-        "L2 coverage": ratio(
-            dcache, ("l2_data_hits", "l2_data_misses"), ("l2_data_requests",)
+            dcache,
+            ("l2_demand_misses",),
+            ("l2_demand_hits", "l2_demand_misses"),
         ),
         "DTLB MPKI": ratio(dtlb, ("l1_dtlb_misses",), ("instructions",), 1000),
         "L2 TLB hit ratio": ratio(

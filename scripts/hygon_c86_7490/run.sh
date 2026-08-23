@@ -54,7 +54,7 @@ base|0x76,0xc0,0xc2,0xc3,0xc1|cycles,instructions,branches,branch_misses,retired
 uops_ls|0x76,0xc0,0x03aa,0xc1,0x0729|cycles,instructions,dispatched_uops,retired_uops,ls_ops_dispatched
 frontend|0x76,0xc0,0x0287,0x0187,0x81|cycles,instructions,ic_dq_empty,ic_backpressure,l1i_fetch_misses
 backend|0x76,0xc0,0x40af,0x20af,0x10af|cycles,instructions,retire_token_stalls,agsq_token_stalls,alu_token_stalls
-dcache|0xc0,0x40,0xc860,0x0864,0x7064|instructions,l1d_8byte_accesses,l2_data_requests,l2_data_misses,l2_data_hits
+dcache|0xc0,0x40,0xe860,0x0864,0xf064|instructions,l1d_accesses,l2_request_activity,l2_demand_misses,l2_demand_hits
 dtlb|0xc0,0xff45,0x0f45,0xf045,0x0346|instructions,l1_dtlb_misses,dtlb_l2_hits,dtlb_l2_misses,data_page_walks
 EOF
 
