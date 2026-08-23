@@ -2,11 +2,14 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import json
+from argparse import Namespace
 from collections import defaultdict
 from pathlib import Path
 
-from pytest import MonkeyPatch
+from openpyxl import Workbook
+from pytest import MonkeyPatch, approx
 
+from scripts import build_xlsx
 from scripts.hygon_c86_7490 import summary
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -83,3 +86,47 @@ def test_summary_keeps_request_and_demand_scopes_separate(
     metric_names = list(metrics)
     l2_start = metric_names.index("L2 request activity MPKI")
     assert metric_names[l2_start : l2_start + 5] == list(expected)[1:]
+
+
+def test_summary_places_cycles_share_below_cycles(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stage_cycles = {
+        stage: float(index) for index, stage in enumerate(summary.STAGES, start=1)
+    }
+
+    def fake_read_rows(_root: Path, _group: str, stage: str) -> list[dict[str, str]]:
+        return [
+            defaultdict(
+                lambda: "1",
+                {
+                    "duration_us": "1",
+                    "cycles": str(stage_cycles[stage]),
+                    "instructions": "1000",
+                },
+            )
+        ]
+
+    monkeypatch.setattr(summary, "parse_args", lambda: Namespace(run_root=tmp_path))
+    monkeypatch.setattr(summary, "read_rows", fake_read_rows)
+    monkeypatch.setattr(summary, "write_quality", lambda _root: None)
+
+    assert summary.main() == 0
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    build_xlsx.write_summary(worksheet, tmp_path)
+    labels = [worksheet.cell(row, 1).value for row in range(1, worksheet.max_row + 1)]
+    cycles_row = labels.index("cycles") + 1
+    share_row = labels.index(summary.CYCLES_SHARE_METRIC) + 1
+    assert share_row == cycles_row + 1
+
+    total_cycles = sum(stage_cycles.values())
+    for column, stage in enumerate(summary.STAGES, start=2):
+        cell = worksheet.cell(share_row, column)
+        expected = round(stage_cycles[stage] / total_cycles, 4)
+        assert cell.value == approx(expected)
+        assert cell.number_format == "0.00%"
+
+    workbook.close()

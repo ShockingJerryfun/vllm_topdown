@@ -34,6 +34,9 @@ Core PMU 采集。
 miss ratio 均以 demand hit + miss 为分母。L1I 指标显示为
 `L1I 32B fetch-window miss MPKI`，公式保持不变。
 
+汇总页在 `cycles` 行下方显示 `cycles占八阶段总cycles比例`，计算方式为
+该阶段平均 cycles 除以八个阶段平均 cycles 之和。
+
 汇总页中的前后端指标是独立诊断比例，不是 Intel Topdown，不能相加为
 100%。L3/DF 属于共享 uncore PMU，在事件语义确认前保持“未采集”。
 

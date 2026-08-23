@@ -20,7 +20,9 @@ STAGES = (
     "postprocess_sampled",
 )
 GROUPS = ("base", "uops_ls", "frontend", "backend", "dcache", "dtlb")
+CYCLES_SHARE_METRIC = "cycles占八阶段总cycles比例"
 PERCENT_METRICS = {
+    CYCLES_SHARE_METRIC,
     "Branch miss ratio",
     "Frontend starvation ratio",
     "Downstream backpressure",
@@ -171,6 +173,16 @@ def write_quality(root: Path) -> None:
 def main() -> int:
     args = parse_args()
     values = {stage: stage_metrics(args.run_root, stage) for stage in STAGES}
+    stage_cycles = [values[stage]["cycles"] for stage in STAGES]
+    available_cycles = [value for value in stage_cycles if value is not None]
+    cycle_shares: dict[str, float | None] = dict.fromkeys(STAGES)
+    if len(available_cycles) == len(STAGES):
+        total_cycles = sum(available_cycles)
+        if total_cycles > 0:
+            cycle_shares = {
+                stage: cycles / total_cycles
+                for stage, cycles in zip(STAGES, available_cycles, strict=True)
+            }
     with (args.run_root / "summary.csv").open(
         "w", newline="", encoding="utf-8-sig"
     ) as handle:
@@ -183,6 +195,16 @@ def main() -> int:
                     *(format_value(metric, values[stage][metric]) for stage in STAGES),
                 ]
             )
+            if metric == "cycles":
+                writer.writerow(
+                    [
+                        CYCLES_SHARE_METRIC,
+                        *(
+                            format_value(CYCLES_SHARE_METRIC, cycle_shares[stage])
+                            for stage in STAGES
+                        ),
+                    ]
+                )
         writer.writerow(["L3/DF", *("未采集" for _ in STAGES)])
         writer.writerow(["热点函数", *("见 hotspot/perf_report.txt" for _ in STAGES)])
     write_quality(args.run_root)
