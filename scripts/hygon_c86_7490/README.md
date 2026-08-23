@@ -18,6 +18,7 @@ Core PMU 采集。
 `kperf_finish()`。根目录的 `kperf_instrument.py` 通过 `perf_event_open` 创建 pinned
 事件组，按当前线程计数，不调用 `perf stat`。每组不超过五个事件，结果包含
 `time_enabled`、`time_running` 和有效性标记；不对未完整调度的计数做缩放。
+time使用不打开PMU的独立轮次采集，避免PMU控制开销进入墙钟时间。
 
 | 组 | 事件 |
 | --- | --- |
@@ -37,8 +38,10 @@ miss ratio 均以 demand hit + miss 为分母。L1I 指标显示为
 汇总页在 `cycles` 行下方显示 `cycles占八阶段总cycles比例`，计算方式为
 该阶段平均 cycles 除以八个阶段平均 cycles 之和。
 
-汇总页中的前后端指标是独立诊断比例，不是 Intel Topdown，不能相加为
-100%。L3/DF 属于共享 uncore PMU，在事件语义确认前保持“未采集”。
+汇总页的指标行、名称和顺序与920B模板完全一致。Hygon没有等价事件语义的
+Topdown、L1I、L1D、L3等指标直接显示“未采集”；Hygon原生的流水线、L1I和
+L2 request/demand诊断指标保留在各事件组明细sheet中。`CPU利用率` 使用独立
+time轮次中当前线程CPU时间除以墙钟时间，脚本不裁剪实测结果。
 
 容器内先安装一次报表依赖：
 

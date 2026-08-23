@@ -32,6 +32,11 @@ PYTHONPATH="$VLLM_PYTHONPATH" VLLM_USE_V2_MODEL_RUNNER=1 \
     'import os, sys, torch, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen3; print(sys.version); print(vllm.__version__); print(torch.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen3.__file__))' \
     > "$RUN_ROOT/runtime.txt"
 
+RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
+"$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/time" \
+    --mode time \
+    --expected-calls "$(( ${RANDOM_OUTPUT_LEN:-100} - 1 ))"
+
 while IFS='|' read -r label codes; do
     RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
     "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label" \

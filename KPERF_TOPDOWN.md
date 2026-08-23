@@ -25,6 +25,14 @@ decode轮次；eager和piecewise路径不属于这套八阶段统计口径。所
 同步等待等CPU行为，不代表GPU内部cycles或GPU kernel效率。热点函数是独立的
 `perf record` 采集，脚本优先把容器内完成符号解析的报告写入工作簿。
 
+每次完整采集先单独运行一个不打开PMU的 `time` 轮次，再逐组运行PMU轮次。
+time轮次同时记录 `perf_counter_ns()` 墙钟时间和 `thread_time_ns()` 当前线程
+CPU时间；PMU轮次只做事件组reset、enable、disable和read，不再混入墙钟计时。
+汇总中的 `time(us)` 取time轮次的墙钟平均值，`CPU利用率` 按同一阶段有效
+decode样本的 `sum(thread CPU time) / sum(wall time)` 计算。它表示被打点线程在
+该墙钟区间内的CPU占用比例，不是进程全部线程或整机利用率；脚本不裁剪或归一化
+实测结果。
+
 ## 脚本结构
 
 - `scripts/run_topdown.sh`：宿主机统一入口。
@@ -75,10 +83,13 @@ bash /home/fj/vllm_fj/scripts/run_topdown.sh
 
 ## Excel内容
 
-- 第一个sheet固定为 `汇总`，只汇总对齐的decode调用；CPU利用率未采集时显示
-  `未采集`。
+- 第一个sheet固定为 `汇总`，只汇总对齐的decode调用。920B、950和Hygon使用
+  完全相同的指标行及顺序；芯片没有等价事件的指标显示 `未采集`。
+- `cycles` 下一行固定为 `cycles占八阶段总cycles比例`；`time(us)` 和
+  `CPU利用率` 来自独立time轮次。
 - 第二个sheet固定为 `热点函数`，使用容器内 `perf report` 解析后的报告。
-- 其余明细sheet保留全部原始记录，包括prefill、decode和未对齐调用。
+- 其余明细sheet保留全部原始记录，包括prefill、decode和未对齐调用；明细中的
+  `时间(us)` 也来自独立time轮次，`time_enabled/time_running` 只描述PMU调度。
 - `prepare_attn` 明细包含runner与model state两个区段；`output` 明细包含
   `async_output_init` 与 `postprocess_sampled` 两个区段。
 - 普通sheet冻结首行和首列；热点正文保持左对齐。

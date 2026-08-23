@@ -3,6 +3,9 @@
 本目录沿用公共的 `kperf_instrument.py`、`scripts/run_one.sh`和
 `scripts/parse_run.py`，只定义950事件组与汇总公式。每组最多6个事件，
 与openEuler libkperf中HIPG每组最多6个事件的限制一致。
+time使用不打开PMU的独立轮次；汇总指标行与920B模板完全一致，没有采集到
+等价事件的指标显示“未采集”。`CPU利用率` 为当前线程CPU时间除以墙钟时间，
+脚本不裁剪实测结果。
 
 | 组 | 事件 |
 | --- | --- |

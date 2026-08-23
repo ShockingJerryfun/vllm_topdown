@@ -16,9 +16,10 @@
 | `async_output_init` | `AsyncOutput.__init__()` |
 | `postprocess_sampled` | `GPUModelRunner.postprocess_sampled()` |
 
-`kperf_instrument.py` 直接调用 Linux `perf_event_open(2)`，记录当前CPU线程，
-不是GPU计数器。八个区间不互相嵌套，解析时保留全部原始记录，只用对齐的
-decode调用计算汇总。
+`kperf_instrument.py` 的 time 轮次使用单调墙钟和当前线程CPU时钟，PMU轮次
+直接调用 Linux `perf_event_open(2)`；两类数据分开采集，避免计时和PMU控制
+互相进入统计区间。这些都不是GPU计数器。八个区间不互相嵌套，解析时保留
+全部原始记录，只用对齐的decode调用计算汇总。
 
 完整边界、采集口径和使用方法见
 [KPERF_TOPDOWN.md](KPERF_TOPDOWN.md)。

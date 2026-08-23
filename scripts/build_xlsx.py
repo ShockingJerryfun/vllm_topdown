@@ -39,6 +39,40 @@ BASE_HEADERS = (
     "time_running",
     "valid",
 )
+SUMMARY_METRICS = (
+    "CPU利用率",
+    "time(us)",
+    "cycles",
+    "cycles占八阶段总cycles比例",
+    "instructions",
+    "IPC/Retire",
+    "FrontendBound",
+    "BackendBound",
+    "BadSpec",
+    "dp_spec",
+    "ld_spec",
+    "st_spec",
+    "branch_spec",
+    "ase_spec",
+    "br missrate",
+    "br mpki",
+    "l1i missrate",
+    "l1i mpki",
+    "l2i missrate",
+    "l2i mpki",
+    "l1d missrate",
+    "l1d mpki",
+    "L2d missrate",
+    "L2d mpki",
+    "L3 missrate",
+    "L3 mpki",
+    "itlb missrate",
+    "itlb mpki",
+    "dtlb missrate",
+    "dtlb mpki",
+    "stlb missrate",
+    "stlb mpki",
+)
 FORMULA_TOKEN = re.compile(r"\{([^{}]+)\}")
 SAFE_SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
@@ -86,7 +120,7 @@ class GroupSpec:
 class StageRow:
     sequence: int
     global_call: int
-    duration_us: float
+    wall_time_us: float | None
     time_enabled: int
     time_running: int
     valid: int
@@ -207,6 +241,15 @@ def read_matrix(path: Path) -> list[list[str]]:
         return [list(row) for row in csv.reader(handle)]
 
 
+def load_wall_times(run_root: Path, stage: str) -> dict[int, float]:
+    rows = read_dict_rows(run_root / "time" / "raw" / f"{stage}.csv")
+    return {
+        int(row["sequence"]): float(row["wall_time_us"])
+        for row in rows
+        if row["valid"] == "1"
+    }
+
+
 def load_stage_rows(run_root: Path, group: GroupSpec, stage: str) -> list[StageRow]:
     raw_path = run_root / group.name / "raw" / f"{stage}.csv"
     parsed_path = run_root / group.name / "parsed" / f"{stage}.csv"
@@ -216,9 +259,11 @@ def load_stage_rows(run_root: Path, group: GroupSpec, stage: str) -> list[StageR
         raise ValueError(f"{parsed_path}: no aligned decode rows")
     decode_calls = {int(row["global_call"]) for row in parsed_rows}
     first_decode_call = min(decode_calls)
+    wall_times = load_wall_times(run_root, stage)
 
     rows: list[StageRow] = []
     for raw in raw_rows:
+        sequence = int(raw["sequence"])
         global_call = int(raw["global_call"])
         if global_call in decode_calls:
             scope = "Decode（计入汇总）"
@@ -229,9 +274,9 @@ def load_stage_rows(run_root: Path, group: GroupSpec, stage: str) -> list[StageR
         counts = {event: int(raw[event]) for event in group.events}
         rows.append(
             StageRow(
-                sequence=int(raw["sequence"]),
+                sequence=sequence,
                 global_call=global_call,
-                duration_us=float(raw["duration_us"]),
+                wall_time_us=wall_times.get(sequence),
                 time_enabled=int(raw["time_enabled"]),
                 time_running=int(raw["time_running"]),
                 valid=int(raw["valid"]),
@@ -327,7 +372,7 @@ def write_detail_section(
             row.sequence,
             row.global_call,
             row.scope,
-            row.duration_us,
+            row.wall_time_us,
             row.time_enabled,
             row.time_running,
             row.valid,
@@ -370,8 +415,13 @@ def normalize_summary_rows(rows: list[list[str]]) -> list[list[str]]:
         raise ValueError("summary.csv is empty")
     width = max(len(row) for row in rows)
     normalized = [row + [""] * (width - len(row)) for row in rows]
-    if not any(row and row[0] == "CPU利用率" for row in normalized[1:]):
-        normalized.insert(1, ["CPU利用率", *(["未采集"] * (width - 1))])
+    labels = [
+        row[0]
+        for row in normalized[1:]
+        if row[0] and row[0] not in {"热点函数", "热点函数占比："}
+    ]
+    if labels != list(SUMMARY_METRICS):
+        raise ValueError("summary metrics do not match the 920b template")
 
     hotspot_index = next(
         (

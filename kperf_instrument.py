@@ -5,6 +5,7 @@ import errno
 import fcntl
 import os
 import platform
+import statistics
 import struct
 import sys
 import time
@@ -62,9 +63,14 @@ NAMES = [
     for name in os.getenv("KPERF_EVENT_NAMES", "").split(",")
     if name.strip()
 ]
+MODE = os.getenv("KPERF_MODE", "pmu")
+ENABLED = os.getenv("KPERF_ENABLE") == "1"
 FDS: list[int] = []
 IDS: list[int] = []
-START_NS = 0
+WALL_START_NS = 0
+THREAD_START_NS = 0
+WALL_OVERHEAD_NS = 0
+THREAD_OVERHEAD_NS = 0
 CALL = 0
 NAME = ""
 ACTIVE = False
@@ -116,8 +122,31 @@ def close_group() -> None:
     IDS.clear()
 
 
-def init() -> None:
-    if os.getenv("KPERF_ENABLE") != "1" or not EVENTS:
+def calibrate_time_overhead(samples: int = 257) -> tuple[int, int]:
+    wall_deltas: list[int] = []
+    thread_deltas: list[int] = []
+    for _ in range(samples):
+        thread_start = time.thread_time_ns()
+        wall_start = time.perf_counter_ns()
+        wall_end = time.perf_counter_ns()
+        thread_end = time.thread_time_ns()
+        wall_deltas.append(wall_end - wall_start)
+        thread_deltas.append(thread_end - thread_start)
+    return statistics.median_low(wall_deltas), statistics.median_low(thread_deltas)
+
+
+def init_time() -> None:
+    global THREAD_OVERHEAD_NS, WALL_OVERHEAD_NS
+    WALL_OVERHEAD_NS, THREAD_OVERHEAD_NS = calibrate_time_overhead()
+    emit(
+        f"[kperf] enabled: mode=time wall_overhead_ns={WALL_OVERHEAD_NS} "
+        f"thread_overhead_ns={THREAD_OVERHEAD_NS}"
+    )
+
+
+def init_pmu() -> None:
+    if not EVENTS:
+        emit("[kperf] init failed: PMU mode requires raw events")
         return
     if len(EVENTS) != len(NAMES):
         emit("[kperf] init failed: event names do not match event codes")
@@ -134,23 +163,43 @@ def init() -> None:
             f"errno={error.errno} {error.strerror}"
         )
         return
-    emit(f"[kperf] enabled: names={NAMES}, events={EVENTS}, fds={FDS}")
+    emit(f"[kperf] enabled: mode=pmu names={NAMES}, events={EVENTS}, fds={FDS}")
+
+
+def init() -> None:
+    if not ENABLED:
+        return
+    if MODE == "time":
+        init_time()
+    elif MODE == "pmu":
+        init_pmu()
+    else:
+        emit(f"[kperf] init failed: unsupported mode={MODE}")
 
 
 def kperf_begin(name: str) -> None:
-    global ACTIVE, CALL, NAME, START_NS
+    global ACTIVE, CALL, NAME, THREAD_START_NS, WALL_START_NS
+    if not ENABLED:
+        return
+    if MODE == "time":
+        CALL += 1
+        NAME = name
+        ACTIVE = True
+        THREAD_START_NS = time.thread_time_ns()
+        WALL_START_NS = time.perf_counter_ns()
+        return
     if not FDS:
         return
+    CALL += 1
+    NAME = name
     try:
         fcntl.ioctl(FDS[0], PERF_IOC_RESET, PERF_IOC_FLAG_GROUP)
         fcntl.ioctl(FDS[0], PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP)
     except OSError as error:
+        CALL -= 1
         ACTIVE = False
         emit(f"[kperf] begin failed: stage={name} errno={error.errno}")
         return
-    START_NS = time.perf_counter_ns()
-    CALL += 1
-    NAME = name
     ACTIVE = True
 
 
@@ -169,15 +218,41 @@ def read_group() -> tuple[int, int, list[int]]:
 
 def kperf_finish(name: str) -> None:
     global ACTIVE
-    if not FDS or not ACTIVE:
+    if not ACTIVE:
         return
-    end_ns = time.perf_counter_ns()
-    ACTIVE = False
+    if MODE == "time":
+        wall_end_ns = time.perf_counter_ns()
+        thread_end_ns = time.thread_time_ns()
+        ACTIVE = False
+        wall_ns = max(0, wall_end_ns - WALL_START_NS - WALL_OVERHEAD_NS)
+        thread_ns = max(
+            0,
+            thread_end_ns - THREAD_START_NS - THREAD_OVERHEAD_NS,
+        )
+        valid = int(wall_ns > 0)
+        emit(
+            ",".join(
+                (
+                    "KPERF_TIME",
+                    name or NAME,
+                    str(CALL),
+                    str(wall_ns),
+                    str(thread_ns),
+                    str(valid),
+                )
+            )
+        )
+        return
+    if not FDS:
+        ACTIVE = False
+        return
     try:
         fcntl.ioctl(FDS[0], PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP)
+        ACTIVE = False
         time_enabled, time_running, counts = read_group()
         valid = int(time_running > 0 and time_running == time_enabled)
     except OSError as error:
+        ACTIVE = False
         emit(f"[kperf] finish failed: stage={name} errno={error.errno}")
         time_enabled, time_running = 0, 0
         counts = [0] * len(FDS)
@@ -186,7 +261,6 @@ def kperf_finish(name: str) -> None:
         "KPERF",
         name or NAME,
         str(CALL),
-        f"{(end_ns - START_NS) / 1000:.2f}",
         str(time_enabled),
         str(time_running),
         str(valid),

@@ -20,6 +20,7 @@ STAGES = (
     "postprocess_sampled",
 )
 GROUPS = (
+    "time",
     "topdown",
     "icache",
     "dcache",
@@ -30,7 +31,10 @@ GROUPS = (
     "imix",
     "imix2",
 )
+CYCLES_SHARE_METRIC = "cycles占八阶段总cycles比例"
 PERCENT_METRICS = {
+    "CPU利用率",
+    CYCLES_SHARE_METRIC,
     "IPC/Retire",
     "FrontendBound",
     "BackendBound",
@@ -92,12 +96,26 @@ def ratio(
     )
 
 
+def aggregate_ratio(
+    rows: list[dict[str, str]],
+    numerator: str,
+    denominator: str,
+) -> float | None:
+    valid = [row for row in rows if float(row[denominator]) > 0]
+    if not valid:
+        return None
+    return sum(float(row[numerator]) for row in valid) / sum(
+        float(row[denominator]) for row in valid
+    )
+
+
 def add(values: tuple[float | None, ...]) -> float | None:
     present = [value for value in values if value is not None]
     return sum(present) if present else None
 
 
 def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
+    timing = read_rows(root, "time", stage)
     topdown = read_rows(root, "topdown", stage)
     imix = read_rows(root, "imix", stage)
     imix2 = read_rows(root, "imix2", stage)
@@ -133,6 +151,12 @@ def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
     )
 
     return {
+        "CPU利用率": aggregate_ratio(
+            timing,
+            "thread_cpu_time_us",
+            "wall_time_us",
+        ),
+        "time(us)": mean(timing, lambda row: float(row["wall_time_us"])),
         "cycles": mean(topdown, lambda row: float(row["0x0011"])),
         "instructions": mean(topdown, lambda row: float(row["0x0008"])),
         "IPC/Retire": retire,
@@ -199,12 +223,21 @@ def write_quality(root: Path) -> None:
 def main() -> int:
     args = parse_args()
     values = {stage: stage_metrics(args.run_root, stage) for stage in STAGES}
+    stage_cycles = [values[stage]["cycles"] for stage in STAGES]
+    available_cycles = [value for value in stage_cycles if value is not None]
+    cycle_shares: dict[str, float | None] = dict.fromkeys(STAGES)
+    if len(available_cycles) == len(STAGES):
+        total_cycles = sum(available_cycles)
+        if total_cycles > 0:
+            cycle_shares = {
+                stage: cycles / total_cycles
+                for stage, cycles in zip(STAGES, available_cycles, strict=True)
+            }
     metrics = list(values[STAGES[0]])
     output = args.run_root / "summary.csv"
     with output.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         writer.writerow(["", *STAGES])
-        writer.writerow(["CPU利用率", *("未采集" for _ in STAGES)])
         for metric in metrics:
             writer.writerow(
                 [
@@ -212,6 +245,16 @@ def main() -> int:
                     *(format_value(metric, values[stage][metric]) for stage in STAGES),
                 ]
             )
+            if metric == "cycles":
+                writer.writerow(
+                    [
+                        CYCLES_SHARE_METRIC,
+                        *(
+                            format_value(CYCLES_SHARE_METRIC, cycle_shares[stage])
+                            for stage in STAGES
+                        ),
+                    ]
+                )
         writer.writerow([""])
         writer.writerow(["热点函数占比：", *("见热点函数" for _ in STAGES)])
     write_quality(args.run_root)

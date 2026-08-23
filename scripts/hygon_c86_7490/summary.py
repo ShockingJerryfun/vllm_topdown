@@ -19,21 +19,29 @@ STAGES = (
     "async_output_init",
     "postprocess_sampled",
 )
-GROUPS = ("base", "uops_ls", "frontend", "backend", "dcache", "dtlb")
+GROUPS = ("time", "base", "uops_ls", "frontend", "backend", "dcache", "dtlb")
 CYCLES_SHARE_METRIC = "cycles占八阶段总cycles比例"
 PERCENT_METRICS = {
+    "CPU利用率",
     CYCLES_SHARE_METRIC,
-    "Branch miss ratio",
-    "Frontend starvation ratio",
-    "Downstream backpressure",
-    "Retire resource pressure",
-    "Address/LS pressure",
-    "ALU resource pressure",
-    "L2 hit ratio",
-    "L2 miss ratio",
-    "L2 TLB hit ratio",
-    "L2 TLB miss ratio",
-    "DTLB coverage",
+    "IPC/Retire",
+    "FrontendBound",
+    "BackendBound",
+    "BadSpec",
+    "dp_spec",
+    "ld_spec",
+    "st_spec",
+    "branch_spec",
+    "ase_spec",
+    "br missrate",
+    "l1i missrate",
+    "l2i missrate",
+    "l1d missrate",
+    "L2d missrate",
+    "L3 missrate",
+    "itlb missrate",
+    "dtlb missrate",
+    "stlb missrate",
 }
 
 
@@ -73,68 +81,75 @@ def ratio(
     )
 
 
+def aggregate_ratio(
+    rows: list[dict[str, str]],
+    numerator: str,
+    denominator: str,
+) -> float | None:
+    valid = [row for row in rows if float(row[denominator]) > 0]
+    if not valid:
+        return None
+    return sum(float(row[numerator]) for row in valid) / sum(
+        float(row[denominator]) for row in valid
+    )
+
+
 def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
+    timing = read_rows(root, "time", stage)
     base = read_rows(root, "base", stage)
-    uops = read_rows(root, "uops_ls", stage)
-    frontend = read_rows(root, "frontend", stage)
-    backend = read_rows(root, "backend", stage)
     dcache = read_rows(root, "dcache", stage)
     dtlb = read_rows(root, "dtlb", stage)
     return {
-        "time(us)": mean(base, lambda row: float(row["duration_us"])),
+        "CPU利用率": aggregate_ratio(
+            timing,
+            "thread_cpu_time_us",
+            "wall_time_us",
+        ),
+        "time(us)": mean(timing, lambda row: float(row["wall_time_us"])),
         "cycles": mean(base, lambda row: float(row["cycles"])),
         "instructions": mean(base, lambda row: float(row["instructions"])),
-        "IPC": ratio(base, ("instructions",), ("cycles",)),
-        "CPI": ratio(base, ("cycles",), ("instructions",)),
-        "Branch MPKI": ratio(base, ("branch_misses",), ("instructions",), 1000),
-        "Branch miss ratio": ratio(base, ("branch_misses",), ("branches",)),
-        "Branches / inst": ratio(base, ("branches",), ("instructions",)),
-        "Retired uops / inst": ratio(base, ("retired_uops",), ("instructions",)),
-        "Retired uops / cycle": ratio(base, ("retired_uops",), ("cycles",)),
-        "Dispatched uops / inst": ratio(uops, ("dispatched_uops",), ("instructions",)),
-        "Dispatched uops / cycle": ratio(uops, ("dispatched_uops",), ("cycles",)),
-        "LS ops / inst": ratio(uops, ("ls_ops_dispatched",), ("instructions",)),
-        "Frontend starvation ratio": ratio(frontend, ("ic_dq_empty",), ("cycles",)),
-        "Downstream backpressure": ratio(frontend, ("ic_backpressure",), ("cycles",)),
-        "L1I 32B fetch-window miss MPKI": ratio(
-            frontend, ("l1i_fetch_misses",), ("instructions",), 1000
-        ),
-        "Retire resource pressure": ratio(
-            backend, ("retire_token_stalls",), ("cycles",)
-        ),
-        "Address/LS pressure": ratio(backend, ("agsq_token_stalls",), ("cycles",)),
-        "ALU resource pressure": ratio(backend, ("alu_token_stalls",), ("cycles",)),
-        "L1D accesses / inst": ratio(dcache, ("l1d_accesses",), ("instructions",)),
-        "L2 request activity MPKI": ratio(
-            dcache, ("l2_request_activity",), ("instructions",), 1000
-        ),
-        "L2 demand access MPKI": ratio(
-            dcache,
-            ("l2_demand_hits", "l2_demand_misses"),
-            ("instructions",),
-            1000,
-        ),
-        "L2 miss MPKI": ratio(dcache, ("l2_demand_misses",), ("instructions",), 1000),
-        "L2 hit ratio": ratio(
-            dcache,
-            ("l2_demand_hits",),
-            ("l2_demand_hits", "l2_demand_misses"),
-        ),
-        "L2 miss ratio": ratio(
+        "IPC/Retire": None,
+        "FrontendBound": None,
+        "BackendBound": None,
+        "BadSpec": None,
+        "dp_spec": None,
+        "ld_spec": None,
+        "st_spec": None,
+        "branch_spec": None,
+        "ase_spec": None,
+        "br missrate": ratio(base, ("branch_misses",), ("branches",)),
+        "br mpki": ratio(base, ("branch_misses",), ("instructions",), 1000),
+        "l1i missrate": None,
+        "l1i mpki": None,
+        "l2i missrate": None,
+        "l2i mpki": None,
+        "l1d missrate": None,
+        "l1d mpki": None,
+        "L2d missrate": ratio(
             dcache,
             ("l2_demand_misses",),
             ("l2_demand_hits", "l2_demand_misses"),
         ),
-        "DTLB MPKI": ratio(dtlb, ("l1_dtlb_misses",), ("instructions",), 1000),
-        "L2 TLB hit ratio": ratio(
-            dtlb, ("dtlb_l2_hits",), ("dtlb_l2_hits", "dtlb_l2_misses")
+        "L2d mpki": ratio(
+            dcache,
+            ("l2_demand_misses",),
+            ("instructions",),
+            1000,
         ),
-        "L2 TLB miss ratio": ratio(
+        "L3 missrate": None,
+        "L3 mpki": None,
+        "itlb missrate": None,
+        "itlb mpki": None,
+        "dtlb missrate": None,
+        "dtlb mpki": ratio(dtlb, ("l1_dtlb_misses",), ("instructions",), 1000),
+        "stlb missrate": ratio(
             dtlb, ("dtlb_l2_misses",), ("dtlb_l2_hits", "dtlb_l2_misses")
         ),
-        "Page-walk MPKI": ratio(dtlb, ("data_page_walks",), ("instructions",), 1000),
-        "DTLB coverage": ratio(
-            dtlb, ("dtlb_l2_hits", "dtlb_l2_misses"), ("l1_dtlb_misses",)
+        "stlb mpki": ratio(
+            dtlb,
+            ("dtlb_l2_misses",),
+            ("instructions",),
+            1000,
         ),
     }
 
@@ -187,7 +202,7 @@ def main() -> int:
         "w", newline="", encoding="utf-8-sig"
     ) as handle:
         writer = csv.writer(handle)
-        writer.writerow(["C86 Pipeline Bottleneck Analysis", *STAGES])
+        writer.writerow(["", *STAGES])
         for metric in values[STAGES[0]]:
             writer.writerow(
                 [
@@ -205,8 +220,8 @@ def main() -> int:
                         ),
                     ]
                 )
-        writer.writerow(["L3/DF", *("未采集" for _ in STAGES)])
-        writer.writerow(["热点函数", *("见 hotspot/perf_report.txt" for _ in STAGES)])
+        writer.writerow([""])
+        writer.writerow(["热点函数占比：", *("见热点函数" for _ in STAGES)])
     write_quality(args.run_root)
     LOGGER.info("wrote %s", args.run_root / "summary.csv")
     return 0

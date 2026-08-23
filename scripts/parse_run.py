@@ -21,57 +21,95 @@ STAGES = (
     "postprocess_sampled",
 )
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-ROW_PATTERN = re.compile(
+PMU_ROW_PATTERN = re.compile(
     r"KPERF,(?P<stage>" + "|".join(map(re.escape, STAGES)) + r"),"
-    r"(?P<call>\d+),(?P<duration>\d+(?:\.\d+)?),(?P<enabled>\d+),"
-    r"(?P<running>\d+),(?P<valid>[01]),(?P<counts>\d+(?:,\d+)*)\s*$"
+    r"(?P<call>\d+),(?P<enabled>\d+),(?P<running>\d+),"
+    r"(?P<valid>[01]),(?P<counts>\d+(?:,\d+)*)\s*$"
+)
+TIME_ROW_PATTERN = re.compile(
+    r"KPERF_TIME,(?P<stage>" + "|".join(map(re.escape, STAGES)) + r"),"
+    r"(?P<call>\d+),(?P<wall_ns>\d+),(?P<thread_ns>\d+),"
+    r"(?P<valid>[01])\s*$"
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--event-names", required=True)
+    parser.add_argument("--event-names", default="")
+    parser.add_argument("--mode", choices=("pmu", "time"), default="pmu")
     parser.add_argument("--expected-calls", type=int, required=True)
     return parser.parse_args()
 
 
-def parse_rows(path: Path, names: list[str]) -> dict[str, list[dict[str, object]]]:
+def parse_rows(
+    path: Path,
+    names: list[str],
+    mode: str,
+) -> dict[str, list[dict[str, object]]]:
     rows: dict[str, list[dict[str, object]]] = defaultdict(list)
     for line_number, raw_line in enumerate(
         path.read_text(errors="replace").splitlines(), 1
     ):
-        match = ROW_PATTERN.search(ANSI_ESCAPE.sub("", raw_line))
+        pattern = TIME_ROW_PATTERN if mode == "time" else PMU_ROW_PATTERN
+        match = pattern.search(ANSI_ESCAPE.sub("", raw_line))
         if match is None:
             continue
-        counts = match.group("counts").split(",")
-        if len(counts) != len(names):
-            raise ValueError(f"{path}:{line_number}: invalid counter count")
         stage = match.group("stage")
         row: dict[str, object] = {
             "sequence": len(rows[stage]) + 1,
             "global_call": int(match.group("call")),
-            "duration_us": float(match.group("duration")),
-            "time_enabled": int(match.group("enabled")),
-            "time_running": int(match.group("running")),
             "valid": int(match.group("valid")),
         }
-        row.update(zip(names, (int(value) for value in counts), strict=True))
+        if mode == "time":
+            wall_time_us = int(match.group("wall_ns")) / 1000
+            thread_cpu_time_us = int(match.group("thread_ns")) / 1000
+            row.update(
+                {
+                    "wall_time_us": wall_time_us,
+                    "thread_cpu_time_us": thread_cpu_time_us,
+                    "cpu_utilization": (
+                        thread_cpu_time_us / wall_time_us if wall_time_us > 0 else ""
+                    ),
+                }
+            )
+        else:
+            counts = match.group("counts").split(",")
+            if len(counts) != len(names):
+                raise ValueError(f"{path}:{line_number}: invalid counter count")
+            row.update(
+                {
+                    "time_enabled": int(match.group("enabled")),
+                    "time_running": int(match.group("running")),
+                }
+            )
+            row.update(zip(names, (int(value) for value in counts), strict=True))
         rows[stage].append(row)
     return {stage: rows.get(stage, []) for stage in STAGES}
 
 
 def validate(
-    run_dir: Path, names: list[str], rows: dict[str, list[dict[str, object]]]
+    run_dir: Path,
+    names: list[str],
+    rows: dict[str, list[dict[str, object]]],
+    mode: str,
 ) -> None:
     server_log = ANSI_ESCAPE.sub(
         "", (run_dir / "server.log").read_text(errors="replace")
     )
     if "[kperf] init failed" in server_log:
-        raise ValueError("PMU event group initialization failed")
-    enabled = [line for line in server_log.splitlines() if "[kperf] enabled:" in line]
-    if not any(all(name in line for name in names) for line in enabled):
-        raise ValueError("PMU event group was not enabled")
+        raise ValueError(f"{mode} collection initialization failed")
+    enabled = [
+        line
+        for line in server_log.splitlines()
+        if f"[kperf] enabled: mode={mode}" in line
+    ]
+    if not enabled:
+        raise ValueError(f"{mode} collection was not enabled")
+    if mode == "pmu" and not any(
+        all(name in line for name in names) for line in enabled
+    ):
+        raise ValueError("PMU event group names do not match")
     if not any(rows.values()):
         raise ValueError("no stage rows found")
 
@@ -133,21 +171,20 @@ def write_csvs(
     names: list[str],
     rows: dict[str, list[dict[str, object]]],
     expected_calls: int,
+    mode: str,
 ) -> None:
     raw_dir = run_dir / "raw"
     parsed_dir = run_dir / "parsed"
     raw_dir.mkdir()
     parsed_dir.mkdir()
     decode_rows = select_decode_rows(rows)
-    headers = [
-        "sequence",
-        "global_call",
-        "duration_us",
-        "time_enabled",
-        "time_running",
-        "valid",
-        *names,
-    ]
+    headers = ["sequence", "global_call"]
+    if mode == "time":
+        headers.extend(
+            ["wall_time_us", "thread_cpu_time_us", "cpu_utilization", "valid"]
+        )
+    else:
+        headers.extend(["time_enabled", "time_running", "valid", *names])
     quality: list[list[object]] = []
     for stage in STAGES:
         selected = decode_rows[stage]
@@ -202,9 +239,11 @@ def write_csvs(
 def main() -> int:
     args = parse_args()
     names = [name.strip() for name in args.event_names.split(",") if name.strip()]
-    rows = parse_rows(args.run_dir / "measurement.log", names)
-    validate(args.run_dir, names, rows)
-    write_csvs(args.run_dir, names, rows, args.expected_calls)
+    if args.mode == "pmu" and not names:
+        raise ValueError("PMU mode requires --event-names")
+    rows = parse_rows(args.run_dir / "measurement.log", names, args.mode)
+    validate(args.run_dir, names, rows, args.mode)
+    write_csvs(args.run_dir, names, rows, args.expected_calls, args.mode)
     LOGGER.info("row counts: %s", {stage: len(rows[stage]) for stage in STAGES})
     return 0
 

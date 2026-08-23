@@ -20,6 +20,7 @@ RUN_PATH = REPO_ROOT / "scripts" / "hygon_c86_7490" / "run.sh"
 def test_dcache_events_and_report_formulas() -> None:
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     dcache = next(group for group in config["groups"] if group["name"] == "dcache")
+    frontend = next(group for group in config["groups"] if group["name"] == "frontend")
 
     assert dcache["events"] == [
         "instructions",
@@ -57,35 +58,55 @@ def test_dcache_events_and_report_formulas() -> None:
         "l2_demand_misses,l2_demand_hits"
     )
     assert run_line in RUN_PATH.read_text(encoding="utf-8").splitlines()
+    frontend_metric_names = [metric["name"] for metric in frontend["derived"]]
+    assert "L1I 32B fetch-window miss MPKI" in frontend_metric_names
+    assert "L1I fetch MPKI" not in frontend_metric_names
+    assert "L2 coverage" not in CONFIG_PATH.read_text(encoding="utf-8")
 
 
-def test_summary_keeps_request_and_demand_scopes_separate(
+def test_hygon_summary_uses_only_comparable_920b_metrics(
     monkeypatch: MonkeyPatch,
 ) -> None:
     row = defaultdict(
         lambda: "1",
         {
+            "wall_time_us": "100",
+            "thread_cpu_time_us": "50",
+            "cycles": "2000",
             "instructions": "1000",
-            "l1i_fetch_misses": "10",
-            "l2_request_activity": "500",
+            "branches": "100",
+            "branch_misses": "10",
             "l2_demand_misses": "50",
             "l2_demand_hits": "150",
+            "l1_dtlb_misses": "25",
+            "dtlb_l2_hits": "15",
+            "dtlb_l2_misses": "5",
         },
     )
     monkeypatch.setattr(summary, "read_rows", lambda *_: [row])
     metrics = summary.stage_metrics(Path(), "add_requests")
     expected = {
-        "L1I 32B fetch-window miss MPKI": 10,
-        "L2 request activity MPKI": 500,
-        "L2 demand access MPKI": 200,
-        "L2 miss MPKI": 50,
-        "L2 hit ratio": 0.75,
-        "L2 miss ratio": 0.25,
+        "CPU利用率": 0.5,
+        "time(us)": 100,
+        "cycles": 2000,
+        "instructions": 1000,
+        "br missrate": 0.1,
+        "br mpki": 10,
+        "L2d missrate": 0.25,
+        "L2d mpki": 50,
+        "dtlb mpki": 25,
+        "stlb missrate": 0.25,
+        "stlb mpki": 5,
     }
     assert {name: metrics[name] for name in expected} == expected
-    metric_names = list(metrics)
-    l2_start = metric_names.index("L2 request activity MPKI")
-    assert metric_names[l2_start : l2_start + 5] == list(expected)[1:]
+    assert metrics["IPC/Retire"] is None
+    assert metrics["FrontendBound"] is None
+    expected_labels = [
+        label
+        for label in build_xlsx.SUMMARY_METRICS
+        if label != summary.CYCLES_SHARE_METRIC
+    ]
+    assert list(metrics) == expected_labels
 
 
 def test_summary_places_cycles_share_below_cycles(
@@ -101,7 +122,8 @@ def test_summary_places_cycles_share_below_cycles(
             defaultdict(
                 lambda: "1",
                 {
-                    "duration_us": "1",
+                    "wall_time_us": "100",
+                    "thread_cpu_time_us": "50",
                     "cycles": str(stage_cycles[stage]),
                     "instructions": "1000",
                 },
@@ -118,9 +140,18 @@ def test_summary_places_cycles_share_below_cycles(
     worksheet = workbook.active
     build_xlsx.write_summary(worksheet, tmp_path)
     labels = [worksheet.cell(row, 1).value for row in range(1, worksheet.max_row + 1)]
+    metric_labels = [label for label in labels if label in build_xlsx.SUMMARY_METRICS]
+    assert metric_labels == list(build_xlsx.SUMMARY_METRICS)
     cycles_row = labels.index("cycles") + 1
     share_row = labels.index(summary.CYCLES_SHARE_METRIC) + 1
     assert share_row == cycles_row + 1
+    cpu_row = labels.index("CPU利用率") + 1
+    time_row = labels.index("time(us)") + 1
+    frontend_row = labels.index("FrontendBound") + 1
+    assert worksheet.cell(cpu_row, 2).value == approx(0.5)
+    assert worksheet.cell(cpu_row, 2).number_format == "0.00%"
+    assert worksheet.cell(time_row, 2).value == approx(100)
+    assert worksheet.cell(frontend_row, 2).value == "未采集"
 
     total_cycles = sum(stage_cycles.values())
     for column, stage in enumerate(summary.STAGES, start=2):

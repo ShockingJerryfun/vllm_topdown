@@ -62,9 +62,25 @@ trap cleanup EXIT INT TERM
 [[ ! -e "$RUN_DIR" ]] || { printf 'Exists: %s\n' "$RUN_DIR" >&2; exit 2; }
 install -d -m 755 "$RUN_DIR"
 
+COLLECT_MODE=disabled
+KPERF_ENV=(KPERF_ENABLE=0)
+if [[ "$LABEL" == time ]]; then
+    COLLECT_MODE=time
+    KPERF_ENV=(KPERF_ENABLE=1 KPERF_MODE=time)
+elif [[ -n "$CODES" ]]; then
+    COLLECT_MODE=pmu
+    KPERF_ENV=(
+        KPERF_ENABLE=1
+        KPERF_MODE=pmu
+        KPERF_RAW_EVENTS="$CODES"
+        KPERF_EVENT_NAMES="$NAMES"
+    )
+fi
+
 {
     printf 'version=0.26.0\n'
     printf 'label=%s\n' "$LABEL"
+    printf 'mode=%s\n' "$COLLECT_MODE"
     printf 'events=%s\n' "$CODES"
     printf 'names=%s\n' "$NAMES"
     printf 'model=%s\n' "$MODEL"
@@ -73,14 +89,6 @@ install -d -m 755 "$RUN_DIR"
     printf 'server_flags=%s\n' "${SERVER_FLAGS:-}"
 } > "$RUN_DIR/run.env"
 
-KPERF_ENV=(KPERF_ENABLE=0)
-if [[ -n "$CODES" ]]; then
-    KPERF_ENV=(
-        KPERF_ENABLE=1
-        KPERF_RAW_EVENTS="$CODES"
-        KPERF_EVENT_NAMES="$NAMES"
-    )
-fi
 read -r -a EXTRA_SERVER_FLAGS <<< "${SERVER_FLAGS:-}"
 
 setsid env \
