@@ -2,9 +2,10 @@
 
 set -Eeuo pipefail
 
-LABEL=${1:?usage: run_one.sh LABEL [EVENT_CODES] [EVENT_NAMES]}
+LABEL=${1:?usage: run_one.sh LABEL [EVENT_CODES] [EVENT_NAMES] [PMU_SCOPE]}
 CODES=${2-}
 NAMES=${3:-$CODES}
+PMU_SCOPE=${4:-thread}
 RUN_ROOT=${RUN_ROOT:?set RUN_ROOT}
 MODEL=${MODEL:?set MODEL}
 VLLM_BIN=${VLLM_BIN:-vllm}
@@ -68,19 +69,30 @@ if [[ "$LABEL" == time ]]; then
     COLLECT_MODE=time
     KPERF_ENV=(KPERF_ENABLE=1 KPERF_MODE=time)
 elif [[ -n "$CODES" ]]; then
+    [[ "$PMU_SCOPE" == thread || "$PMU_SCOPE" == uncore ]] || {
+        printf 'Unsupported PMU scope: %s\n' "$PMU_SCOPE" >&2
+        exit 7
+    }
     COLLECT_MODE=pmu
     KPERF_ENV=(
         KPERF_ENABLE=1
         KPERF_MODE=pmu
+        KPERF_SCOPE="$PMU_SCOPE"
         KPERF_RAW_EVENTS="$CODES"
         KPERF_EVENT_NAMES="$NAMES"
     )
+    if [[ "$PMU_SCOPE" == uncore ]]; then
+        : "${KPERF_PMU_NAME:?set KPERF_PMU_NAME for uncore collection}"
+        KPERF_ENV+=(KPERF_PMU_NAME="$KPERF_PMU_NAME")
+    fi
 fi
 
 {
     printf 'version=0.26.0\n'
     printf 'label=%s\n' "$LABEL"
     printf 'mode=%s\n' "$COLLECT_MODE"
+    printf 'pmu_scope=%s\n' "$PMU_SCOPE"
+    printf 'pmu_name=%s\n' "${KPERF_PMU_NAME:-}"
     printf 'events=%s\n' "$CODES"
     printf 'names=%s\n' "$NAMES"
     printf 'model=%s\n' "$MODEL"

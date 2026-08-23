@@ -84,16 +84,20 @@ bash /home/fj/vllm_fj/scripts/run_topdown.sh
 ## Excel内容
 
 - 第一个sheet固定为 `汇总`，只汇总对齐的decode调用。920B、950和Hygon使用
-  完全相同的指标行及顺序；芯片没有等价事件的指标显示 `未采集`。
-- `cycles` 下一行固定为 `cycles占八阶段总cycles比例`；`time(us)` 和
+  完全相同的指标行及顺序；芯片没有采集的等价事件显示 `未采集`，
+  已确认事件不响应的指标显示 `未支持`。
+- `cycles` 下一行固定为 `cycle占比`；`time(us)` 和
   `CPU利用率` 来自独立time轮次。
+- `IPC` 和 `Retire` 分别输出，不合并为一行。
+- 阶段比率按 `SUM(分子)/SUM(分母)` 计算，不对每行比率再取平均。
 - 第二个sheet固定为 `热点函数`，使用容器内 `perf report` 解析后的报告。
 - 其余明细sheet保留全部原始记录，包括prefill、decode和未对齐调用；明细中的
   `时间(us)` 也来自独立time轮次，`time_enabled/time_running` 只描述PMU调度。
 - `prepare_attn` 明细包含runner与model state两个区段；`output` 明细包含
   `async_output_init` 与 `postprocess_sampled` 两个区段。
 - 普通sheet冻结首行和首列；热点正文保持左对齐。
-- 920b和950默认生成56个sheet，Hygon默认生成38个sheet。
+- 920b和950默认生成56个sheet，Hygon七组Core PMU加一组独立L3
+  Uncore采集，默认生成50个sheet。
 
 每次运行结果位于 `results/<芯片>/<RUN_ID>/`，包含原始日志、解析CSV、
 `summary.csv`、`collection_quality.csv`、热点文件和最终Excel。只有最终Excel

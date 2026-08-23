@@ -18,30 +18,34 @@ Core PMU 采集。
 `kperf_finish()`。根目录的 `kperf_instrument.py` 通过 `perf_event_open` 创建 pinned
 事件组，按当前线程计数，不调用 `perf stat`。每组不超过五个事件，结果包含
 `time_enabled`、`time_running` 和有效性标记；不对未完整调度的计数做缩放。
-time使用不打开PMU的独立轮次采集，避免PMU控制开销进入墙钟时间。
+time 使用不打开 PMU 的独立轮次采集，避免 PMU 控制开销进入墙钟时间。
 
 | 组 | 事件 |
 | --- | --- |
-| base | cycles 0x76，instructions 0xc0，branches 0xc2，branch_misses 0xc3，retired_uops 0xc1 |
-| uops_ls | cycles 0x76，instructions 0xc0，dispatched_uops 0x03aa，retired_uops 0xc1，ls_ops_dispatched 0x0729 |
-| frontend | cycles 0x76，instructions 0xc0，ic_dq_empty 0x0287，ic_backpressure 0x0187，l1i_fetch_misses 0x81 |
-| backend | cycles 0x76，instructions 0xc0，retire_token_stalls 0x40af，agsq_token_stalls 0x20af，alu_token_stalls 0x10af |
-| dcache | instructions 0xc0，l1d_accesses 0x40，l2_request_activity 0xe860，l2_demand_misses 0x0864，l2_demand_hits 0xf064 |
-| dtlb | instructions 0xc0，l1_dtlb_misses 0xff45，dtlb_l2_hits 0x0f45，dtlb_l2_misses 0xf045，data_page_walks 0x0346 |
+| topdown | cycles 0x76，instructions 0xc0，retired_uops 0xc1，dispatched_uops 0x03aa，frontend_stall_any 0x0487 |
+| branch | instructions 0xc0，branches 0xc2，branch_misses 0xc3 |
+| spec_ls | dispatched_uops 0x03aa，load_ops 0x0129，store_ops 0x0229，load_store_ops 0x0429，branches 0xc2 |
+| spec_ase | dispatched_uops 0x03aa，fpu_spec_uops 0x0f00 |
+| icache | instructions 0xc0，l1i_fetch_windows 0x80，l1i_miss_windows 0x81，l2i_accesses 0x0764，l2i_misses 0x0164 |
+| dcache | instructions 0xc0，ls_ops 0x0729，l1d_miss_proxy 0xc860，l2d_misses 0x0864，l2d_hits 0xf064 |
+| tlb | instructions 0xc0，ls_ops 0x0729，l1_dtlb_misses 0xff45，stlb_hits 0x0f45，stlb_misses 0xf045 |
 
-`0x60` 统计 L2 request activity，`0x64` 统计 L2 demand hit/miss，两者范围
-不同。报表分别输出 `L2 request activity MPKI` 和
-`L2 demand access MPKI`，不再计算二者之间的 coverage；L2 hit ratio 和
-miss ratio 均以 demand hit + miss 为分母。L1I 指标显示为
-`L1I 32B fetch-window miss MPKI`，公式保持不变。
+L3 使用独立 Uncore 轮次：access 为
+`amd_l3/event=0x04,umask=0xff/`，miss 为
+`amd_l3/event=0x06,umask=0x01/`。采集器读取 `amd_l3/cpumask`，以
+`pid=-1` 在每个代表 CPU 上开启事件并对所有 L3 域求和。该结果是
+共享域归因，不是严格线程归因。
 
-汇总页在 `cycles` 行下方显示 `cycles占八阶段总cycles比例`，计算方式为
+汇总页在 `cycles` 行下方显示 `cycle占比`，计算方式为
 该阶段平均 cycles 除以八个阶段平均 cycles 之和。
 
-汇总页的指标行、名称和顺序与920B模板完全一致。Hygon没有等价事件语义的
-Topdown、L1I、L1D、L3等指标直接显示“未采集”；Hygon原生的流水线、L1I和
-L2 request/demand诊断指标保留在各事件组明细sheet中。`CPU利用率` 使用独立
-time轮次中当前线程CPU时间除以墙钟时间，脚本不裁剪实测结果。
+所有阶段比率按 `SUM(分子)/SUM(分母)` 计算。Retire、FrontendBound、
+BackendBound、BadSpec 和 spec 分类都是 `Hygon Zen1 proxy`，不能与
+920B 当作完全同源事件比较；L1D 是由 L2 请求反推的 miss proxy，
+Topdown 或 spec 分类的原始汇总超过 105% 时显示“无效”，不强制归一化。
+STLB 仅表示 D-side STLB。C86-7490 上的 0x84、0x85、0x94、0x99 在
+受控测试中不响应，ITLB 两行明确显示“未支持”。`CPU利用率` 使用独立
+time 轮次中当前线程 CPU 时间除以墙钟时间，脚本不裁剪实测结果。
 
 容器内先安装一次报表依赖：
 

@@ -9,6 +9,7 @@ import statistics
 import struct
 import sys
 import time
+from pathlib import Path
 
 PERF_EVENT_OPEN = {"aarch64": 241, "x86_64": 298}.get(platform.machine(), 241)
 PERF_TYPE_RAW = 4
@@ -64,9 +65,10 @@ NAMES = [
     if name.strip()
 ]
 MODE = os.getenv("KPERF_MODE", "pmu")
+SCOPE = os.getenv("KPERF_SCOPE", "thread")
+PMU_NAME = os.getenv("KPERF_PMU_NAME", "")
 ENABLED = os.getenv("KPERF_ENABLE") == "1"
-FDS: list[int] = []
-IDS: list[int] = []
+COUNTER_GROUPS: list[tuple[list[int], list[int]]] = []
 WALL_START_NS = 0
 THREAD_START_NS = 0
 WALL_OVERHEAD_NS = 0
@@ -87,9 +89,17 @@ def event_id(fd: int) -> int:
     return struct.unpack("<Q", data)[0]
 
 
-def open_event(event: int, group_fd: int, leader: bool) -> int:
+def open_event(
+    event: int,
+    event_type: int,
+    pid: int,
+    cpu: int,
+    group_fd: int,
+    leader: bool,
+    exclude_hv: bool,
+) -> int:
     attr = PerfEventAttr()
-    attr.type = PERF_TYPE_RAW
+    attr.type = event_type
     attr.size = ctypes.sizeof(PerfEventAttr)
     attr.config = event
     attr.read_format = (
@@ -98,14 +108,14 @@ def open_event(event: int, group_fd: int, leader: bool) -> int:
         | PERF_FORMAT_TOTAL_TIME_RUNNING
         | PERF_FORMAT_ID
     )
-    attr.flags = PERF_EXCLUDE_HV
+    attr.flags = PERF_EXCLUDE_HV if exclude_hv else 0
     if leader:
         attr.flags |= PERF_DISABLED | PERF_PINNED
     fd = LIBC.syscall(
         PERF_EVENT_OPEN,
         ctypes.byref(attr),
-        0,
-        -1,
+        pid,
+        cpu,
         group_fd,
         PERF_FLAG_FD_CLOEXEC,
     )
@@ -115,11 +125,58 @@ def open_event(event: int, group_fd: int, leader: bool) -> int:
     return int(fd)
 
 
-def close_group() -> None:
-    for fd in FDS:
-        os.close(fd)
-    FDS.clear()
-    IDS.clear()
+def open_group(
+    event_type: int,
+    pid: int,
+    cpu: int,
+    exclude_hv: bool,
+) -> tuple[list[int], list[int]]:
+    fds: list[int] = []
+    ids: list[int] = []
+    try:
+        for index, event in enumerate(EVENTS):
+            fd = open_event(
+                event,
+                event_type,
+                pid,
+                cpu,
+                fds[0] if fds else -1,
+                index == 0,
+                exclude_hv,
+            )
+            fds.append(fd)
+            ids.append(event_id(fd))
+    except OSError:
+        for fd in fds:
+            os.close(fd)
+        raise
+    return fds, ids
+
+
+def close_groups() -> None:
+    for fds, _ in COUNTER_GROUPS:
+        for fd in fds:
+            os.close(fd)
+    COUNTER_GROUPS.clear()
+
+
+def parse_cpu_list(value: str) -> list[int]:
+    cpus: set[int] = set()
+    for item in value.strip().split(","):
+        if not item:
+            continue
+        if "-" in item:
+            start_text, end_text = item.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if end < start:
+                raise ValueError(f"invalid CPU range: {item}")
+            cpus.update(range(start, end + 1))
+        else:
+            cpus.add(int(item))
+    if not cpus:
+        raise ValueError("CPU list is empty")
+    return sorted(cpus)
 
 
 def calibrate_time_overhead(samples: int = 257) -> tuple[int, int]:
@@ -152,18 +209,39 @@ def init_pmu() -> None:
         emit("[kperf] init failed: event names do not match event codes")
         return
     try:
-        for index, event in enumerate(EVENTS):
-            fd = open_event(event, FDS[0] if FDS else -1, index == 0)
-            FDS.append(fd)
-            IDS.append(event_id(fd))
-    except OSError as error:
-        close_group()
+        if SCOPE == "thread":
+            COUNTER_GROUPS.append(
+                open_group(PERF_TYPE_RAW, pid=0, cpu=-1, exclude_hv=True)
+            )
+            scope_detail = "thread"
+        elif SCOPE == "uncore":
+            if not PMU_NAME:
+                raise ValueError("uncore scope requires KPERF_PMU_NAME")
+            pmu_root = Path("/sys/bus/event_source/devices") / PMU_NAME
+            event_type = int((pmu_root / "type").read_text(encoding="ascii").strip())
+            cpus = parse_cpu_list((pmu_root / "cpumask").read_text(encoding="ascii"))
+            for cpu in cpus:
+                COUNTER_GROUPS.append(
+                    open_group(
+                        event_type,
+                        pid=-1,
+                        cpu=cpu,
+                        exclude_hv=False,
+                    )
+                )
+            scope_detail = f"uncore pmu={PMU_NAME} cpus={cpus}"
+        else:
+            raise ValueError(f"unsupported PMU scope={SCOPE}")
+    except (OSError, ValueError) as error:
+        close_groups()
         emit(
-            f"[kperf] init failed: event=0x{event:04x} "
-            f"errno={error.errno} {error.strerror}"
+            f"[kperf] init failed: scope={SCOPE} error={type(error).__name__}: {error}"
         )
         return
-    emit(f"[kperf] enabled: mode=pmu names={NAMES}, events={EVENTS}, fds={FDS}")
+    emit(
+        f"[kperf] enabled: mode=pmu scope={scope_detail} "
+        f"names={NAMES}, events={EVENTS}, groups={len(COUNTER_GROUPS)}"
+    )
 
 
 def init() -> None:
@@ -188,14 +266,26 @@ def kperf_begin(name: str) -> None:
         THREAD_START_NS = time.thread_time_ns()
         WALL_START_NS = time.perf_counter_ns()
         return
-    if not FDS:
+    if not COUNTER_GROUPS:
         return
     CALL += 1
     NAME = name
     try:
-        fcntl.ioctl(FDS[0], PERF_IOC_RESET, PERF_IOC_FLAG_GROUP)
-        fcntl.ioctl(FDS[0], PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP)
+        enabled_leaders: list[int] = []
+        for fds, _ in COUNTER_GROUPS:
+            leader = fds[0]
+            fcntl.ioctl(leader, PERF_IOC_RESET, PERF_IOC_FLAG_GROUP)
+            fcntl.ioctl(leader, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP)
+            enabled_leaders.append(leader)
     except OSError as error:
+        for leader in enabled_leaders:
+            try:
+                fcntl.ioctl(leader, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP)
+            except OSError as cleanup_error:
+                emit(
+                    "[kperf] begin cleanup failed: "
+                    f"stage={name} errno={cleanup_error.errno}"
+                )
         CALL -= 1
         ACTIVE = False
         emit(f"[kperf] begin failed: stage={name} errno={error.errno}")
@@ -203,17 +293,17 @@ def kperf_begin(name: str) -> None:
     ACTIVE = True
 
 
-def read_group() -> tuple[int, int, list[int]]:
-    size = 24 + 16 * len(FDS)
-    data = os.read(FDS[0], size)
+def read_group(fds: list[int], ids: list[int]) -> tuple[int, int, list[int]]:
+    size = 24 + 16 * len(fds)
+    data = os.read(fds[0], size)
     if len(data) != size:
         raise OSError(errno.EIO, "short group read")
-    values = struct.unpack(f"<QQQ{2 * len(FDS)}Q", data)
-    if values[0] != len(FDS):
+    values = struct.unpack(f"<QQQ{2 * len(fds)}Q", data)
+    if values[0] != len(fds):
         raise OSError(errno.EIO, "unexpected group size")
     time_enabled, time_running = values[1:3]
     by_id = dict(zip(values[4::2], values[3::2], strict=True))
-    return time_enabled, time_running, [by_id.get(event, 0) for event in IDS]
+    return time_enabled, time_running, [by_id.get(event, 0) for event in ids]
 
 
 def kperf_finish(name: str) -> None:
@@ -243,19 +333,36 @@ def kperf_finish(name: str) -> None:
             )
         )
         return
-    if not FDS:
+    if not COUNTER_GROUPS:
         ACTIVE = False
         return
+    disable_error: OSError | None = None
+    for fds, _ in COUNTER_GROUPS:
+        try:
+            fcntl.ioctl(fds[0], PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP)
+        except OSError as error:
+            disable_error = disable_error or error
     try:
-        fcntl.ioctl(FDS[0], PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP)
         ACTIVE = False
-        time_enabled, time_running, counts = read_group()
-        valid = int(time_running > 0 and time_running == time_enabled)
+        if disable_error is not None:
+            raise disable_error
+        time_enabled = 0
+        time_running = 0
+        counts = [0] * len(EVENTS)
+        valid = 1
+        for fds, ids in COUNTER_GROUPS:
+            group_enabled, group_running, group_counts = read_group(fds, ids)
+            time_enabled += group_enabled
+            time_running += group_running
+            valid &= int(group_running > 0 and group_running == group_enabled)
+            counts = [
+                total + count for total, count in zip(counts, group_counts, strict=True)
+            ]
     except OSError as error:
         ACTIVE = False
         emit(f"[kperf] finish failed: stage={name} errno={error.errno}")
         time_enabled, time_running = 0, 0
-        counts = [0] * len(FDS)
+        counts = [0] * len(EVENTS)
         valid = 0
     fields = [
         "KPERF",

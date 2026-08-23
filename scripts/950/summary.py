@@ -31,11 +31,11 @@ GROUPS = (
     "imix",
     "imix2",
 )
-CYCLES_SHARE_METRIC = "cycles占八阶段总cycles比例"
+CYCLES_SHARE_METRIC = "cycle占比"
 PERCENT_METRICS = {
     "CPU利用率",
     CYCLES_SHARE_METRIC,
-    "IPC/Retire",
+    "Retire",
     "FrontendBound",
     "BackendBound",
     "BadSpec",
@@ -79,34 +79,20 @@ def mean(
     return sum(values) / len(values) if values else None
 
 
+def total(rows: list[dict[str, str]], fields: tuple[str, ...]) -> float:
+    return sum(sum(float(row[field]) for field in fields) for row in rows)
+
+
 def ratio(
     rows: list[dict[str, str]],
     numerator: tuple[str, ...],
     denominator: tuple[str, ...],
     scale: float = 1.0,
 ) -> float | None:
-    valid = [row for row in rows if sum(float(row[code]) for code in denominator) > 0]
-    return mean(
-        valid,
-        lambda row: (
-            scale
-            * sum(float(row[code]) for code in numerator)
-            / sum(float(row[code]) for code in denominator)
-        ),
-    )
-
-
-def aggregate_ratio(
-    rows: list[dict[str, str]],
-    numerator: str,
-    denominator: str,
-) -> float | None:
-    valid = [row for row in rows if float(row[denominator]) > 0]
-    if not valid:
+    denominator_sum = total(rows, denominator)
+    if denominator_sum <= 0:
         return None
-    return sum(float(row[numerator]) for row in valid) / sum(
-        float(row[denominator]) for row in valid
-    )
+    return scale * total(rows, numerator) / denominator_sum
 
 
 def add(values: tuple[float | None, ...]) -> float | None:
@@ -130,21 +116,16 @@ def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
 
     retire = ratio(topdown, ("0x0008",), ("0x0011",), 1 / 8)
     frontend = ratio(topdown, ("0x1f21",), ("0x0011",), 1 / 8)
-    bad_spec = mean(
-        topdown,
-        lambda row: (
-            (float(row["0x001b"]) - float(row["0x0008"])) / (8 * float(row["0x0011"]))
-        ),
-    )
-    backend = mean(
-        topdown,
-        lambda row: (
-            1
-            - float(row["0x0008"]) / (8 * float(row["0x0011"]))
-            - float(row["0x1f21"]) / (8 * float(row["0x0011"]))
-            - (float(row["0x001b"]) - float(row["0x0008"])) / (8 * float(row["0x0011"]))
-        ),
-    )
+    cycles = total(topdown, ("0x0011",))
+    bad_spec = None
+    if cycles > 0:
+        bad_spec = (total(topdown, ("0x001b",)) - total(topdown, ("0x0008",))) / (
+            8 * cycles
+        )
+    topdown_parts = (retire, frontend, bad_spec)
+    backend = None
+    if all(value is not None for value in topdown_parts):
+        backend = 1 - sum(value for value in topdown_parts if value is not None)
     branch_spec = add(
         (
             ratio(imix, ("0x0078",), ("0x001b",)),
@@ -153,15 +134,16 @@ def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
     )
 
     return {
-        "CPU利用率": aggregate_ratio(
+        "CPU利用率": ratio(
             timing,
-            "thread_cpu_time_us",
-            "wall_time_us",
+            ("thread_cpu_time_us",),
+            ("wall_time_us",),
         ),
         "time(us)": mean(timing, lambda row: float(row["wall_time_us"])),
         "cycles": mean(topdown, lambda row: float(row["0x0011"])),
         "instructions": mean(topdown, lambda row: float(row["0x0008"])),
-        "IPC/Retire": retire,
+        "IPC": ratio(topdown, ("0x0008",), ("0x0011",)),
+        "Retire": retire,
         "FrontendBound": frontend,
         "BackendBound": backend,
         "BadSpec": bad_spec,

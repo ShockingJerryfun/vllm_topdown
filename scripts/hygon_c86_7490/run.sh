@@ -19,6 +19,11 @@ grep -qm1 'vendor_id.*HygonGenuine' /proc/cpuinfo || {
     printf 'This collector requires HygonGenuine CPU\n' >&2
     exit 3
 }
+AMD_L3_ROOT=/sys/bus/event_source/devices/amd_l3
+[[ -r "$AMD_L3_ROOT/type" && -r "$AMD_L3_ROOT/cpumask" ]] || {
+    printf 'Missing amd_l3 PMU type or cpumask under %s\n' "$AMD_L3_ROOT" >&2
+    exit 3
+}
 
 VLLM_SITE=${VLLM_SITE:-$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')}
 RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
@@ -51,17 +56,40 @@ RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
 
 while IFS='|' read -r label codes names; do
     RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$names"
+    case "$label" in
+        topdown|spec_ls|spec_ase)
+            printf 'metric_basis=Hygon Zen1 proxy\n' \
+                >> "$RUN_ROOT/$label/run.env"
+            ;;
+        dcache)
+            printf 'metric_basis=L2 request-derived L1D miss proxy\n' \
+                >> "$RUN_ROOT/$label/run.env"
+            ;;
+        tlb)
+            printf 'metric_scope=D-side STLB\n' >> "$RUN_ROOT/$label/run.env"
+            ;;
+    esac
     "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label" \
         --event-names "$names" \
         --expected-calls "$(( ${RANDOM_OUTPUT_LEN:-100} - 1 ))"
 done <<'EOF'
-base|0x76,0xc0,0xc2,0xc3,0xc1|cycles,instructions,branches,branch_misses,retired_uops
-uops_ls|0x76,0xc0,0x03aa,0xc1,0x0729|cycles,instructions,dispatched_uops,retired_uops,ls_ops_dispatched
-frontend|0x76,0xc0,0x0287,0x0187,0x81|cycles,instructions,ic_dq_empty,ic_backpressure,l1i_fetch_misses
-backend|0x76,0xc0,0x40af,0x20af,0x10af|cycles,instructions,retire_token_stalls,agsq_token_stalls,alu_token_stalls
-dcache|0xc0,0x40,0xe860,0x0864,0xf064|instructions,l1d_accesses,l2_request_activity,l2_demand_misses,l2_demand_hits
-dtlb|0xc0,0xff45,0x0f45,0xf045,0x0346|instructions,l1_dtlb_misses,dtlb_l2_hits,dtlb_l2_misses,data_page_walks
+topdown|0x76,0xc0,0xc1,0x03aa,0x0487|cycles,instructions,retired_uops,dispatched_uops,frontend_stall_any
+branch|0xc0,0xc2,0xc3|instructions,branches,branch_misses
+spec_ls|0x03aa,0x0129,0x0229,0x0429,0xc2|dispatched_uops,load_ops,store_ops,load_store_ops,branches
+spec_ase|0x03aa,0x0f00|dispatched_uops,fpu_spec_uops
+icache|0xc0,0x80,0x81,0x0764,0x0164|instructions,l1i_fetch_windows,l1i_miss_windows,l2i_accesses,l2i_misses
+dcache|0xc0,0x0729,0xc860,0x0864,0xf064|instructions,ls_ops,l1d_miss_proxy,l2d_misses,l2d_hits
+tlb|0xc0,0x0729,0xff45,0x0f45,0xf045|instructions,ls_ops,l1_dtlb_misses,stlb_hits,stlb_misses
 EOF
+
+KPERF_PMU_NAME=amd_l3 RUN_ROOT="$RUN_ROOT" \
+    "$COMMON_DIR/run_one.sh" l3 0xff04,0x0106 \
+    l3_accesses,l3_misses uncore
+printf 'metric_scope=shared L3 domains; not strict thread attribution\n' \
+    >> "$RUN_ROOT/l3/run.env"
+"$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/l3" \
+    --event-names l3_accesses,l3_misses \
+    --expected-calls "$(( ${RANDOM_OUTPUT_LEN:-100} - 1 ))"
 
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
 "$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT"

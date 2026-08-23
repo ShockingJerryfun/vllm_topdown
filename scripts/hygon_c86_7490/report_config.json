@@ -1,73 +1,123 @@
 {
   "groups": [
     {
-      "name": "base",
-      "suffix": "BASE",
-      "events": ["cycles", "instructions", "branches", "branch_misses", "retired_uops"],
+      "name": "topdown",
+      "suffix": "TOPDOWN",
+      "events": ["cycles", "instructions", "retired_uops", "dispatched_uops", "frontend_stall_any"],
+      "semantic_headers": [
+        "Hygon Zen1 proxy denominator",
+        "IPC numerator",
+        "Hygon Zen1 proxy: Retire",
+        "Hygon Zen1 proxy: BadSpec",
+        "Hygon Zen1 proxy: FrontendBound"
+      ],
       "derived": [
         {"name": "IPC", "number_format": "0.00", "formula": "=IFERROR({instructions}/{cycles},\"\")"},
-        {"name": "CPI", "number_format": "0.00", "formula": "=IFERROR({cycles}/{instructions},\"\")"},
-        {"name": "Branch MPKI", "number_format": "0.00", "formula": "=IFERROR({branch_misses}/{instructions}*1000,\"\")"},
-        {"name": "Branch miss ratio", "number_format": "0.00%", "formula": "=IFERROR({branch_misses}/{branches},\"\")"},
-        {"name": "Branches / inst", "number_format": "0.00", "formula": "=IFERROR({branches}/{instructions},\"\")"},
-        {"name": "Retired uops / inst", "number_format": "0.00", "formula": "=IFERROR({retired_uops}/{instructions},\"\")"},
-        {"name": "Retired uops / cycle", "number_format": "0.00", "formula": "=IFERROR({retired_uops}/{cycles},\"\")"}
+        {"name": "Retire", "number_format": "0.00%", "formula": "=IFERROR({retired_uops}/(6*{cycles}),\"\")"},
+        {"name": "FrontendBound", "number_format": "0.00%", "formula": "=IFERROR({frontend_stall_any}/{cycles},\"\")"},
+        {"name": "BadSpec", "number_format": "0.00%", "formula": "=IFERROR(MAX({dispatched_uops}-{retired_uops},0)/(6*{cycles}),\"\")"},
+        {"name": "BackendBound", "number_format": "0.00%", "formula": "=IFERROR(1-{Retire}-{FrontendBound}-{BadSpec},\"\")"}
       ]
     },
     {
-      "name": "uops_ls",
-      "suffix": "UOPS_LS",
-      "events": ["cycles", "instructions", "dispatched_uops", "retired_uops", "ls_ops_dispatched"],
+      "name": "branch",
+      "suffix": "BRANCH",
+      "events": ["instructions", "branches", "branch_misses"],
       "derived": [
-        {"name": "Dispatched uops / inst", "number_format": "0.00", "formula": "=IFERROR({dispatched_uops}/{instructions},\"\")"},
-        {"name": "Dispatched uops / cycle", "number_format": "0.00", "formula": "=IFERROR({dispatched_uops}/{cycles},\"\")"},
-        {"name": "LS ops / inst", "number_format": "0.00", "formula": "=IFERROR({ls_ops_dispatched}/{instructions},\"\")"}
+        {"name": "br missrate", "number_format": "0.00%", "formula": "=IFERROR({branch_misses}/{branches},\"\")"},
+        {"name": "br mpki", "number_format": "0.00", "formula": "=IFERROR({branch_misses}/{instructions}*1000,\"\")"}
       ]
     },
     {
-      "name": "frontend",
-      "suffix": "FRONTEND",
-      "events": ["cycles", "instructions", "ic_dq_empty", "ic_backpressure", "l1i_fetch_misses"],
+      "name": "spec_ls",
+      "suffix": "SPEC_LS",
+      "events": ["dispatched_uops", "load_ops", "store_ops", "load_store_ops", "branches"],
+      "semantic_headers": [
+        "Hygon Zen1 proxy denominator",
+        "Hygon Zen1 proxy: ld_spec",
+        "Hygon Zen1 proxy: st_spec",
+        "Hygon Zen1 proxy: st_spec",
+        "Hygon Zen1 proxy: branch_spec"
+      ],
       "derived": [
-        {"name": "Frontend starvation ratio", "number_format": "0.00%", "formula": "=IFERROR({ic_dq_empty}/{cycles},\"\")"},
-        {"name": "Downstream backpressure", "number_format": "0.00%", "formula": "=IFERROR({ic_backpressure}/{cycles},\"\")"},
-        {"name": "L1I 32B fetch-window miss MPKI", "number_format": "0.00", "formula": "=IFERROR({l1i_fetch_misses}/{instructions}*1000,\"\")"}
+        {"name": "ld_spec", "number_format": "0.00%", "formula": "=IFERROR({load_ops}/{dispatched_uops},\"\")"},
+        {"name": "st_spec", "number_format": "0.00%", "formula": "=IFERROR(({store_ops}+{load_store_ops})/{dispatched_uops},\"\")"},
+        {"name": "branch_spec", "number_format": "0.00%", "formula": "=IFERROR({branches}/{dispatched_uops},\"\")"}
       ]
     },
     {
-      "name": "backend",
-      "suffix": "BACKEND",
-      "events": ["cycles", "instructions", "retire_token_stalls", "agsq_token_stalls", "alu_token_stalls"],
+      "name": "spec_ase",
+      "suffix": "SPEC_ASE",
+      "events": ["dispatched_uops", "fpu_spec_uops"],
+      "semantic_headers": [
+        "Hygon Zen1 proxy denominator",
+        "Hygon Zen1 proxy: ase_spec"
+      ],
       "derived": [
-        {"name": "Retire resource pressure", "number_format": "0.00%", "formula": "=IFERROR({retire_token_stalls}/{cycles},\"\")"},
-        {"name": "Address/LS pressure", "number_format": "0.00%", "formula": "=IFERROR({agsq_token_stalls}/{cycles},\"\")"},
-        {"name": "ALU resource pressure", "number_format": "0.00%", "formula": "=IFERROR({alu_token_stalls}/{cycles},\"\")"}
+        {"name": "ase_spec", "number_format": "0.00%", "formula": "=IFERROR({fpu_spec_uops}/{dispatched_uops},\"\")"}
+      ]
+    },
+    {
+      "name": "icache",
+      "suffix": "ICACHE",
+      "events": ["instructions", "l1i_fetch_windows", "l1i_miss_windows", "l2i_accesses", "l2i_misses"],
+      "derived": [
+        {"name": "l1i missrate", "number_format": "0.00%", "formula": "=IFERROR({l1i_miss_windows}/{l1i_fetch_windows},\"\")"},
+        {"name": "l1i mpki", "number_format": "0.00", "formula": "=IFERROR({l1i_miss_windows}/{instructions}*1000,\"\")"},
+        {"name": "l2i missrate", "number_format": "0.00%", "formula": "=IFERROR({l2i_misses}/{l2i_accesses},\"\")"},
+        {"name": "l2i mpki", "number_format": "0.00", "formula": "=IFERROR({l2i_misses}/{instructions}*1000,\"\")"}
       ]
     },
     {
       "name": "dcache",
       "suffix": "DCACHE",
-      "events": ["instructions", "l1d_accesses", "l2_request_activity", "l2_demand_misses", "l2_demand_hits"],
-      "event_headers": ["instructions", "L1D access", "L2 request activity", "L2 demand miss", "L2 demand hit"],
+      "events": ["instructions", "ls_ops", "l1d_miss_proxy", "l2d_misses", "l2d_hits"],
+      "semantic_headers": [
+        "instructions",
+        "load/store operations",
+        "L2 request-derived L1D miss proxy",
+        "L2 demand misses",
+        "L2 demand hits"
+      ],
       "derived": [
-        {"name": "L1D accesses / inst", "number_format": "0.00", "formula": "=IFERROR({l1d_accesses}/{instructions},\"\")"},
-        {"name": "L2 request activity MPKI", "number_format": "0.00", "formula": "=IFERROR({l2_request_activity}/{instructions}*1000,\"\")"},
-        {"name": "L2 demand access MPKI", "number_format": "0.00", "formula": "=IFERROR(({l2_demand_hits}+{l2_demand_misses})/{instructions}*1000,\"\")"},
-        {"name": "L2 miss MPKI", "number_format": "0.00", "formula": "=IFERROR({l2_demand_misses}/{instructions}*1000,\"\")"},
-        {"name": "L2 hit ratio", "number_format": "0.00%", "formula": "=IFERROR({l2_demand_hits}/({l2_demand_hits}+{l2_demand_misses}),\"\")"},
-        {"name": "L2 miss ratio", "number_format": "0.00%", "formula": "=IFERROR({l2_demand_misses}/({l2_demand_hits}+{l2_demand_misses}),\"\")"}
+        {"name": "l1d missrate", "number_format": "0.00%", "formula": "=IFERROR({l1d_miss_proxy}/{ls_ops},\"\")"},
+        {"name": "l1d mpki", "number_format": "0.00", "formula": "=IFERROR({l1d_miss_proxy}/{instructions}*1000,\"\")"},
+        {"name": "L2d missrate", "number_format": "0.00%", "formula": "=IFERROR({l2d_misses}/({l2d_hits}+{l2d_misses}),\"\")"},
+        {"name": "L2d mpki", "number_format": "0.00", "formula": "=IFERROR({l2d_misses}/{instructions}*1000,\"\")"}
       ]
     },
     {
-      "name": "dtlb",
-      "suffix": "DTLB",
-      "events": ["instructions", "l1_dtlb_misses", "dtlb_l2_hits", "dtlb_l2_misses", "data_page_walks"],
+      "name": "tlb",
+      "suffix": "TLB",
+      "events": ["instructions", "ls_ops", "l1_dtlb_misses", "stlb_hits", "stlb_misses"],
+      "semantic_headers": [
+        "instructions",
+        "load/store operations",
+        "L1 DTLB misses",
+        "D-side STLB hits",
+        "D-side STLB misses"
+      ],
       "derived": [
-        {"name": "DTLB MPKI", "number_format": "0.00", "formula": "=IFERROR({l1_dtlb_misses}/{instructions}*1000,\"\")"},
-        {"name": "L2 TLB hit ratio", "number_format": "0.00%", "formula": "=IFERROR({dtlb_l2_hits}/({dtlb_l2_hits}+{dtlb_l2_misses}),\"\")"},
-        {"name": "L2 TLB miss ratio", "number_format": "0.00%", "formula": "=IFERROR({dtlb_l2_misses}/({dtlb_l2_hits}+{dtlb_l2_misses}),\"\")"},
-        {"name": "Page-walk MPKI", "number_format": "0.00", "formula": "=IFERROR({data_page_walks}/{instructions}*1000,\"\")"},
-        {"name": "DTLB coverage", "number_format": "0.00%", "formula": "=IFERROR(({dtlb_l2_hits}+{dtlb_l2_misses})/{l1_dtlb_misses},\"\")"}
+        {"name": "dtlb missrate", "number_format": "0.00%", "formula": "=IFERROR({l1_dtlb_misses}/{ls_ops},\"\")"},
+        {"name": "dtlb mpki", "number_format": "0.00", "formula": "=IFERROR({l1_dtlb_misses}/{instructions}*1000,\"\")"},
+        {"name": "stlb missrate", "number_format": "0.00%", "formula": "=IFERROR({stlb_misses}/({stlb_hits}+{stlb_misses}),\"\")"},
+        {"name": "stlb mpki", "number_format": "0.00", "formula": "=IFERROR({stlb_misses}/{instructions}*1000,\"\")"}
+      ]
+    },
+    {
+      "name": "l3",
+      "suffix": "L3",
+      "events": ["l3_accesses", "l3_misses"],
+      "event_headers": [
+        "access 0x04/0xff",
+        "miss 0x06/0x01"
+      ],
+      "semantic_headers": [
+        "amd_l3 domain sum",
+        "amd_l3 domain sum"
+      ],
+      "derived": [
+        {"name": "L3 missrate", "number_format": "0.00%", "formula": "=IFERROR({l3_misses}/{l3_accesses},\"\")"}
       ]
     }
   ]
