@@ -107,6 +107,15 @@ def cross_group_ratio(
     return scale * total(numerator_rows, numerator) / denominator_sum
 
 
+def average_frequency_mhz(
+    cycles: float | None,
+    time_us: float | None,
+) -> float | None:
+    if cycles is None or time_us is None or time_us <= 0:
+        return None
+    return cycles / time_us
+
+
 def topdown_metrics(rows: list[dict[str, str]]) -> dict[str, MetricValue]:
     retire = aggregate_ratio(rows, ("retired_uops",), ("cycles",), 1 / 6)
     frontend = aggregate_ratio(rows, ("frontend_stall_any",), ("cycles",))
@@ -178,6 +187,8 @@ def stage_metrics(root: Path, stage: str) -> dict[str, MetricValue]:
     l3 = read_rows(root, "l3", stage)
     topdown_values = topdown_metrics(topdown)
     spec_values = spec_metrics(spec_ls, spec_ase)
+    time_us = mean(timing, lambda row: float(row["wall_time_us"]))
+    average_cycles = mean(topdown, lambda row: float(row["cycles"]))
 
     return {
         "CPU利用率": aggregate_ratio(
@@ -185,8 +196,9 @@ def stage_metrics(root: Path, stage: str) -> dict[str, MetricValue]:
             ("thread_cpu_time_us",),
             ("wall_time_us",),
         ),
-        "time(us)": mean(timing, lambda row: float(row["wall_time_us"])),
-        "cycles": mean(topdown, lambda row: float(row["cycles"])),
+        "频率(MHz)": average_frequency_mhz(average_cycles, time_us),
+        "time(us)": time_us,
+        "cycles": average_cycles,
         "instructions": mean(topdown, lambda row: float(row["instructions"])),
         "IPC": aggregate_ratio(topdown, ("instructions",), ("cycles",)),
         "Retire": topdown_values["Retire"],

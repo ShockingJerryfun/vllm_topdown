@@ -90,6 +90,7 @@ def test_shared_summaries_use_aggregate_ratios(
         metrics = module.stage_metrics(Path(), "add_requests")
 
         assert metrics["CPU利用率"] == approx(0.1)
+        assert metrics["频率(MHz)"] == approx(0.2)
         assert metrics["br missrate"] == approx(0.2)
         assert metrics["br mpki"] == approx(200)
         assert "IPC" in metrics

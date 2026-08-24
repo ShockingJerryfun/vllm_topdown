@@ -4,12 +4,13 @@
       "name": "topdown",
       "suffix": "TOPDOWN",
       "events": ["cycles", "instructions", "retired_uops", "dispatched_uops", "frontend_stall_any"],
+      "event_headers": ["0x76", "0xc0", "0xc1", "0x03aa", "0x0487"],
       "semantic_headers": [
-        "Hygon Zen1 proxy denominator",
-        "IPC numerator",
-        "Hygon Zen1 proxy: Retire",
-        "Hygon Zen1 proxy: BadSpec",
-        "Hygon Zen1 proxy: FrontendBound"
+        "cycles",
+        "instructions",
+        "retired_uops",
+        "dispatched_uops",
+        "frontend_stall_any"
       ],
       "derived": [
         {"name": "IPC", "number_format": "0.00", "formula": "=IFERROR({instructions}/{cycles},\"\")"},
@@ -23,6 +24,8 @@
       "name": "branch",
       "suffix": "BRANCH",
       "events": ["instructions", "branches", "branch_misses"],
+      "event_headers": ["0xc0", "0xc2", "0xc3"],
+      "semantic_headers": ["instructions", "branches", "branch_misses"],
       "derived": [
         {"name": "br missrate", "number_format": "0.00%", "formula": "=IFERROR({branch_misses}/{branches},\"\")"},
         {"name": "br mpki", "number_format": "0.00", "formula": "=IFERROR({branch_misses}/{instructions}*1000,\"\")"}
@@ -32,12 +35,13 @@
       "name": "spec_ls",
       "suffix": "SPEC_LS",
       "events": ["dispatched_uops", "load_ops", "store_ops", "load_store_ops", "branches"],
+      "event_headers": ["0x03aa", "0x0129", "0x0229", "0x0429", "0xc2"],
       "semantic_headers": [
-        "Hygon Zen1 proxy denominator",
-        "Hygon Zen1 proxy: ld_spec",
-        "Hygon Zen1 proxy: st_spec",
-        "Hygon Zen1 proxy: st_spec",
-        "Hygon Zen1 proxy: branch_spec"
+        "dispatched_uops",
+        "load_ops",
+        "store_ops",
+        "load_store_ops",
+        "branches"
       ],
       "derived": [
         {"name": "ld_spec", "number_format": "0.00%", "formula": "=IFERROR({load_ops}/{dispatched_uops},\"\")"},
@@ -49,9 +53,10 @@
       "name": "spec_ase",
       "suffix": "SPEC_ASE",
       "events": ["dispatched_uops", "fpu_spec_uops"],
+      "event_headers": ["0x03aa", "0x0f00"],
       "semantic_headers": [
-        "Hygon Zen1 proxy denominator",
-        "Hygon Zen1 proxy: ase_spec"
+        "dispatched_uops",
+        "fpu_spec_uops"
       ],
       "derived": [
         {"name": "ase_spec", "number_format": "0.00%", "formula": "=IFERROR({fpu_spec_uops}/{dispatched_uops},\"\")"}
@@ -61,6 +66,8 @@
       "name": "icache",
       "suffix": "ICACHE",
       "events": ["instructions", "l1i_fetch_windows", "l1i_miss_windows", "l2i_accesses", "l2i_misses"],
+      "event_headers": ["0xc0", "0x80", "0x81", "0x0764", "0x0164"],
+      "semantic_headers": ["instructions", "l1i_fetch_windows", "l1i_miss_windows", "l2i_accesses", "l2i_misses"],
       "derived": [
         {"name": "l1i missrate", "number_format": "0.00%", "formula": "=IFERROR({l1i_miss_windows}/{l1i_fetch_windows},\"\")"},
         {"name": "l1i mpki", "number_format": "0.00", "formula": "=IFERROR({l1i_miss_windows}/{instructions}*1000,\"\")"},
@@ -72,12 +79,13 @@
       "name": "dcache",
       "suffix": "DCACHE",
       "events": ["instructions", "ls_ops", "l1d_miss_proxy", "l2d_misses", "l2d_hits"],
+      "event_headers": ["0xc0", "0x0729", "0xc860", "0x0864", "0xf064"],
       "semantic_headers": [
         "instructions",
-        "load/store operations",
-        "L2 request-derived L1D miss proxy",
-        "L2 demand misses",
-        "L2 demand hits"
+        "ls_ops",
+        "l1d_miss_proxy",
+        "l2d_misses",
+        "l2d_hits"
       ],
       "derived": [
         {"name": "l1d missrate", "number_format": "0.00%", "formula": "=IFERROR({l1d_miss_proxy}/{ls_ops},\"\")"},
@@ -90,12 +98,13 @@
       "name": "tlb",
       "suffix": "TLB",
       "events": ["instructions", "ls_ops", "l1_dtlb_misses", "stlb_hits", "stlb_misses"],
+      "event_headers": ["0xc0", "0x0729", "0xff45", "0x0f45", "0xf045"],
       "semantic_headers": [
         "instructions",
-        "load/store operations",
-        "L1 DTLB misses",
-        "D-side STLB hits",
-        "D-side STLB misses"
+        "ls_ops",
+        "l1_dtlb_misses",
+        "stlb_hits",
+        "stlb_misses"
       ],
       "derived": [
         {"name": "dtlb missrate", "number_format": "0.00%", "formula": "=IFERROR({l1_dtlb_misses}/{ls_ops},\"\")"},
@@ -109,12 +118,12 @@
       "suffix": "L3",
       "events": ["l3_accesses", "l3_misses"],
       "event_headers": [
-        "access 0x04/0xff",
-        "miss 0x06/0x01"
+        "0xff04",
+        "0x0106"
       ],
       "semantic_headers": [
-        "amd_l3 domain sum",
-        "amd_l3 domain sum"
+        "l3_accesses",
+        "l3_misses"
       ],
       "derived": [
         {"name": "L3 missrate", "number_format": "0.00%", "formula": "=IFERROR({l3_misses}/{l3_accesses},\"\")"}

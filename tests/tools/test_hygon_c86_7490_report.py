@@ -140,9 +140,12 @@ def test_hygon_uses_locked_zen1_groups_and_formulas() -> None:
         "l2d_misses",
         "l2d_hits",
     ]
+    for name, (events, _event_names) in EXPECTED_CORE_GROUPS.items():
+        assert groups[name]["event_headers"] == events.split(",")
+        assert groups[name]["semantic_headers"] == groups[name]["events"]
     assert groups["l3"]["event_headers"] == [
-        "access 0x04/0xff",
-        "miss 0x06/0x01",
+        "0xff04",
+        "0x0106",
     ]
     run_text = RUN_PATH.read_text(encoding="utf-8")
     assert "metric_basis=Hygon Zen1 proxy" in run_text
@@ -177,6 +180,7 @@ def test_hygon_summary_uses_aggregate_ratios(monkeypatch: MonkeyPatch) -> None:
     assert metrics["CPU利用率"] == approx(0.1)
     assert metrics["time(us)"] == approx(50)
     assert metrics["cycles"] == approx(500)
+    assert metrics["频率(MHz)"] == approx(10)
     assert metrics["instructions"] == approx(275)
     assert metrics["IPC"] == approx(0.55)
     assert metrics["Retire"] == approx(0.45)
@@ -360,13 +364,16 @@ def test_hygon_workbook_generation(
             workbook["汇总"].cell(row, 1).value
             for row in range(1, workbook["汇总"].max_row + 1)
         ]
+        assert labels.index("频率(MHz)") == labels.index("CPU利用率") + 1
         assert labels.index("cycle占比") == labels.index("cycles") + 1
         assert labels.index("IPC") + 1 == labels.index("Retire")
         itlb_row = labels.index("itlb missrate") + 1
         assert workbook["汇总"].cell(itlb_row, 2).value == "未支持"
         l3_sheet = workbook["add_requests L3"]
-        assert l3_sheet.cell(2, 9).value == "access 0x04/0xff"
-        assert l3_sheet.cell(2, 10).value == "miss 0x06/0x01"
+        assert l3_sheet.cell(1, 9).value == "l3_accesses"
+        assert l3_sheet.cell(1, 10).value == "l3_misses"
+        assert l3_sheet.cell(2, 9).value == "\u20600xff04"
+        assert l3_sheet.cell(2, 10).value == "\u20600x0106"
         assert l3_sheet.cell(3, 11).value == '=IFERROR(J3/I3,"")'
     finally:
         workbook.close()

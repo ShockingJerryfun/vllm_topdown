@@ -41,6 +41,7 @@ BASE_HEADERS = (
 )
 SUMMARY_METRICS = (
     "CPU利用率",
+    "频率(MHz)",
     "time(us)",
     "cycles",
     "cycle占比",

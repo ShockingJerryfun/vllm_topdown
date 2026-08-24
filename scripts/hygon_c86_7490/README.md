@@ -37,7 +37,10 @@ L3 使用独立 Uncore 轮次：access 为
 共享域归因，不是严格线程归因。
 
 汇总页在 `cycles` 行下方显示 `cycle占比`，计算方式为
-该阶段平均 cycles 除以八个阶段平均 cycles 之和。
+该阶段平均 cycles 除以八个阶段平均 cycles 之和。`频率(MHz)` 使用
+该阶段平均 cycles 除以独立 time 轮次的平均 `time(us)` 估算；两个值来自
+不同采集轮次，仅供观察，不用于计算 `CPU利用率`。明细页在事件名称下方
+显示对应原始事件号。
 
 所有阶段比率按 `SUM(分子)/SUM(分母)` 计算。Retire、FrontendBound、
 BackendBound、BadSpec 和 spec 分类都是 `Hygon Zen1 proxy`，不能与
