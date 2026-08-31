@@ -46,13 +46,13 @@ Kunpeng DevKit的Topdown结果交叉检查。汇总脚本不裁剪或强行归�
 
 ```bash
 /opt/vllm/bin/python3 -m pip install \
-  -r /home/fj/vllm_fj/scripts/requirements-report.txt
+  -r /home/fj/vllm_topdown/scripts/requirements-report.txt
 ```
 
 宿主机执行：
 
 ```bash
-CHIP=950 bash /home/fj/vllm_fj/scripts/run_topdown.sh
+CHIP=950 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 ```
 
 运行前根据实际容器、项目和模型路径设置 `CONTAINER`、`PROJECT`和

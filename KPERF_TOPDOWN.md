@@ -51,25 +51,25 @@ decode样本的 `sum(thread CPU time) / sum(wall time)` 计算。它表示被打
 
 ```bash
 /opt/vllm/bin/python3 -m pip install \
-  -r /home/fj/vllm_fj/scripts/requirements-report.txt
+  -r /home/fj/vllm_topdown/scripts/requirements-report.txt
 ```
 
 宿主机选择芯片并执行：
 
 ```bash
-CHIP=920b bash /home/fj/vllm_fj/scripts/run_topdown.sh
-CHIP=950 bash /home/fj/vllm_fj/scripts/run_topdown.sh
-CHIP=hygon_c86_7490 bash /home/fj/vllm_fj/scripts/run_topdown.sh
+CHIP=920b bash /home/fj/vllm_topdown/scripts/run_topdown.sh
+CHIP=950 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
+CHIP=hygon_c86_7490 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 ```
 
 容器名、项目路径、模型路径不同，直接通过环境变量覆盖：
 
 ```bash
 CONTAINER=qwen3_container_fj \
-PROJECT=/home/fj/vllm_fj \
+PROJECT=/home/fj/vllm_topdown \
 MODEL=/home/fj/Qwen3-8B \
 CHIP=920b \
-bash /home/fj/vllm_fj/scripts/run_topdown.sh
+bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 ```
 
 默认输入7000、输出100、模型简写 `qwen3`、版本简写 `0.26`。最终文件按

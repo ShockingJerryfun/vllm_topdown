@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 CHIP=${CHIP:?set CHIP to a directory under scripts}
 CONTAINER=${CONTAINER:-qwen3_container_fj}
-PROJECT=${PROJECT:-/home/fj/vllm_fj}
+PROJECT=${PROJECT:-/home/fj/vllm_topdown}
 MODEL=${MODEL:-/home/model/Qwen3-8B-Instruct}
 VLLM_BIN=${VLLM_BIN:-vllm}
 GPU_ID=${GPU_ID:-0}

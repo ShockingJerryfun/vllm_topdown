@@ -54,13 +54,13 @@ time 轮次中当前线程 CPU 时间除以墙钟时间，脚本不裁剪实测�
 
 ```bash
 /opt/vllm/bin/python3 -m pip install \
-  -r /home/fj/vllm_fj/scripts/requirements-report.txt
+  -r /home/fj/vllm_topdown/scripts/requirements-report.txt
 ```
 
 宿主机执行：
 
 ```bash
-CHIP=hygon_c86_7490 bash /home/fj/vllm_fj/scripts/run_topdown.sh
+CHIP=hygon_c86_7490 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 ```
 
 默认参数为 Qwen3-8B、BF16、input 7000、output 100、并发 1、TP=1、
