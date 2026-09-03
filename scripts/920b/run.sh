@@ -5,16 +5,39 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 COMMON_DIR=$(dirname "$SCRIPT_DIR")
 SOURCE_ROOT=$(dirname "$COMMON_DIR")
+set -a
+source "$COMMON_DIR/config.env"
+set +a
 RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/920b}
-PYTHON_BIN=${PYTHON_BIN:-$(dirname "${VLLM_BIN:-vllm}")/python}
-[[ -x "$PYTHON_BIN" ]] || PYTHON_BIN=python3
 "$PYTHON_BIN" -c 'import openpyxl' >/dev/null 2>&1 || {
     printf 'Missing openpyxl; install scripts/requirements-report.txt\n' >&2
     exit 6
 }
 [[ ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
 install -d -m 755 "$RUN_ROOT"
-VLLM_SITE=${VLLM_SITE:-$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')}
+: > "$RUN_ROOT/commands.txt"
+
+record_command() {
+    local title=$1
+    local stdout_path=$2
+    local merge_stderr=$3
+    local background=$4
+    shift 4
+    {
+        printf '[%s]\n' "$title"
+        printf '%q ' "$@"
+        if [[ -n "$stdout_path" ]]; then
+            printf '> %q' "$stdout_path"
+            [[ "$merge_stderr" == 1 ]] && printf ' 2>&1'
+        fi
+        [[ "$background" == 1 ]] && printf ' &'
+        printf '\n\n'
+    } >> "$RUN_ROOT/commands.txt"
+}
+
+if [[ -z "$VLLM_SITE" ]]; then
+    VLLM_SITE=$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')
+fi
 RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
 trap 'rm -rf -- "$RUNTIME"' EXIT
 cp -rs "$VLLM_SITE" "$RUNTIME/vllm"
@@ -27,39 +50,62 @@ done < <(find "$SOURCE_ROOT/vllm" -type f -print0)
 ln -s "$SOURCE_ROOT/kperf_instrument.py" "$RUNTIME/kperf_instrument.py"
 export SOURCE_ROOT VLLM_PYTHONPATH=$RUNTIME
 
-PYTHONPATH="$VLLM_PYTHONPATH" VLLM_USE_V2_MODEL_RUNNER=1 \
-    "$PYTHON_BIN" -c \
-    'import os, sys, torch, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen3; print(sys.version); print(vllm.__version__); print(torch.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen3.__file__))' \
-    > "$RUN_ROOT/runtime.txt"
+RUNTIME_COMMAND=(
+    env
+    PYTHONPATH="$VLLM_PYTHONPATH"
+    VLLM_USE_V2_MODEL_RUNNER="$VLLM_USE_V2_MODEL_RUNNER"
+    "$PYTHON_BIN" -c
+    'import os, sys, torch, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen3; print(sys.version); print(vllm.__version__); print(torch.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen3.__file__))'
+)
+record_command "runtime identity" "$RUN_ROOT/runtime.txt" 0 0 \
+    "${RUNTIME_COMMAND[@]}"
+"${RUNTIME_COMMAND[@]}" > "$RUN_ROOT/runtime.txt"
+
+EXPECTED_CALLS=$(( RANDOM_OUTPUT_LEN - 1 ))
 
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
-"$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/time" \
-    --mode time \
-    --expected-calls "$(( ${RANDOM_OUTPUT_LEN:-100} - 1 ))"
+PARSE_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/time"
+    --mode time
+    --expected-calls "$EXPECTED_CALLS"
+)
+record_command "time parse" "" 0 0 "${PARSE_COMMAND[@]}"
+"${PARSE_COMMAND[@]}"
 
 while IFS='|' read -r label codes; do
     RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
-    "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label" \
-        --event-names "$codes" \
-        --expected-calls "$(( ${RANDOM_OUTPUT_LEN:-100} - 1 ))"
-done <<'EOF'
-topdown|0x0011,0x0008,0x003e,0x001b
-icache|0x0008,0x0001,0x0014,0x0027,0x0028
-dcache|0x0008,0x0003,0x0004,0x0017,0x0016
-l3|0x0008,0x002a,0x002b
-tlb1|0x0008,0x0002,0x0026,0x0005,0x0025
-tlb2|0x0008,0x002d,0x002e,0x002f,0x0030
-branch|0x0008,0x0021,0x0022
-imix|0x001b,0x0070,0x0073,0x8005,0x0078
-imix2|0x001b,0x0071,0x0079,0x007a,0x0075,0x8006
+    PARSE_COMMAND=(
+        "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label"
+        --event-names "$codes"
+        --expected-calls "$EXPECTED_CALLS"
+    )
+    record_command "$label parse" "" 0 0 "${PARSE_COMMAND[@]}"
+    "${PARSE_COMMAND[@]}"
+done <<EOF
+topdown|$EVENTS_920B_TOPDOWN
+icache|$EVENTS_920B_ICACHE
+dcache|$EVENTS_920B_DCACHE
+l3|$EVENTS_920B_L3
+tlb1|$EVENTS_920B_TLB1
+tlb2|$EVENTS_920B_TLB2
+branch|$EVENTS_920B_BRANCH
+imix|$EVENTS_920B_IMIX
+imix2|$EVENTS_920B_IMIX2
 EOF
 
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
-"$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT"
-"$PYTHON_BIN" "$COMMON_DIR/build_xlsx.py" "$RUN_ROOT" \
-    --config "$SCRIPT_DIR/report_config.json" \
-    --chip "$(basename "$SCRIPT_DIR")" \
-    --version "${VLLM_VERSION_SHORT:-0.26}" \
-    --model-short "${MODEL_SHORT:-qwen3}" \
-    --input-len "${RANDOM_INPUT_LEN:-7000}" \
-    --output-len "${RANDOM_OUTPUT_LEN:-100}"
+SUMMARY_COMMAND=("$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT")
+record_command "summary" "" 0 0 "${SUMMARY_COMMAND[@]}"
+"${SUMMARY_COMMAND[@]}"
+
+BUILD_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/build_xlsx.py" "$RUN_ROOT"
+    --config "$SCRIPT_DIR/report_config.json"
+    --chip "$(basename "$SCRIPT_DIR")"
+    --version "$VLLM_VERSION_SHORT"
+    --model-short "$MODEL_SHORT"
+    --input-len "$RANDOM_INPUT_LEN"
+    --output-len "$RANDOM_OUTPUT_LEN"
+)
+record_command "Excel report" "" 0 0 "${BUILD_COMMAND[@]}"
+"${BUILD_COMMAND[@]}"

@@ -60,11 +60,16 @@ time 轮次中当前线程 CPU 时间除以墙钟时间，脚本不裁剪实测�
 宿主机执行：
 
 ```bash
-CHIP=hygon_c86_7490 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
+bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 ```
+
+运行前在公共的 `scripts/config.env` 中设置
+`CHIP=hygon_c86_7490`，并根据实际环境修改容器、项目、模型和
+Python路径。
 
 默认参数为 Qwen3-8B、BF16、input 7000、output 100、并发 1、TP=1、
 `max-model-len=8192`、`gpu-memory-utilization=0.8`。默认启用
-`--async-scheduling`，可通过 `SERVER_FLAGS` 覆盖。输出100对应99个完整
+`--async-scheduling`，可在 `scripts/config.env` 中修改 `SERVER_FLAGS`。
+输出100对应99个完整
 decode轮次；原始记录全部保留，统计时只选择连续命中八阶段的decode轮次。
 默认最终工作簿为 `hygon_c86_7490_vllm0.26_qwen3_7k100.xlsx`。

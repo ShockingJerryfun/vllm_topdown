@@ -36,6 +36,7 @@ decode样本的 `sum(thread CPU time) / sum(wall time)` 计算。它表示被打
 ## 脚本结构
 
 - `scripts/run_topdown.sh`：宿主机统一入口。
+- `scripts/config.env`：唯一的运行参数和芯片事件组配置。
 - `scripts/run_one.sh`：容器内启动服务、发送请求并采集单个事件组或热点。
 - `scripts/parse_run.py`：保留全部原始记录并标记prefill、decode和未对齐调用。
 - `scripts/build_xlsx.py`：公共Excel生成器。
@@ -54,21 +55,10 @@ decode样本的 `sum(thread CPU time) / sum(wall time)` 计算。它表示被打
   -r /home/fj/vllm_topdown/scripts/requirements-report.txt
 ```
 
-宿主机选择芯片并执行：
+先在 `scripts/config.env` 中修改芯片、容器、仓库、模型和采集参数，
+然后在宿主机执行：
 
 ```bash
-CHIP=920b bash /home/fj/vllm_topdown/scripts/run_topdown.sh
-CHIP=950 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
-CHIP=hygon_c86_7490 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
-```
-
-容器名、项目路径、模型路径不同，直接通过环境变量覆盖：
-
-```bash
-CONTAINER=qwen3_container_fj \
-PROJECT=/home/fj/vllm_topdown \
-MODEL=/home/fj/Qwen3-8B \
-CHIP=920b \
 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 ```
 
@@ -79,7 +69,8 @@ bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 920b_vllm0.26_qwen3_7k100.xlsx
 ```
 
-可通过 `MODEL_SHORT` 和 `VLLM_VERSION_SHORT` 修改文件名中的模型与版本。
+可在 `scripts/config.env` 中修改 `MODEL_SHORT` 和
+`VLLM_VERSION_SHORT` 以改变文件名中的模型与版本。
 
 ## Excel内容
 
@@ -100,5 +91,7 @@ bash /home/fj/vllm_topdown/scripts/run_topdown.sh
   Uncore采集，默认生成50个sheet。
 
 每次运行结果位于 `results/<芯片>/<RUN_ID>/`，包含原始日志、解析CSV、
-`summary.csv`、`collection_quality.csv`、热点文件和最终Excel。只有最终Excel
-存在且非空时，宿主机入口才报告成功。
+`summary.csv`、`collection_quality.csv`、热点文件、最终Excel和
+`commands.txt`。`commands.txt` 记录当次实际展开后的vLLM服务、
+benchmark、`perf record`、`perf report`、解析和报表命令。只有最终
+Excel存在且非空时，宿主机入口才报告成功。

@@ -14,6 +14,7 @@ from scripts.hygon_c86_7490 import summary
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPO_ROOT / "scripts" / "hygon_c86_7490" / "report_config.json"
+ENV_PATH = REPO_ROOT / "scripts" / "config.env"
 RUN_PATH = REPO_ROOT / "scripts" / "hygon_c86_7490" / "run.sh"
 
 EXPECTED_CORE_GROUPS = {
@@ -128,9 +129,15 @@ def test_hygon_uses_locked_zen1_groups_and_formulas() -> None:
     groups = {group["name"]: group for group in config["groups"]}
 
     assert list(groups) == [*EXPECTED_CORE_GROUPS, "l3"]
+    env_lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
     run_lines = RUN_PATH.read_text(encoding="utf-8").splitlines()
     for name, (events, event_names) in EXPECTED_CORE_GROUPS.items():
-        assert f"{name}|{events}|{event_names}" in run_lines
+        suffix = name.upper()
+        assert f"EVENTS_HYGON_{suffix}={events}" in env_lines
+        assert f"NAMES_HYGON_{suffix}={event_names}" in env_lines
+        assert (
+            f"{name}|$EVENTS_HYGON_{suffix}|$NAMES_HYGON_{suffix}" in run_lines
+        )
         assert len(events.split(",")) <= 5
 
     assert groups["dcache"]["events"] == [
@@ -147,11 +154,14 @@ def test_hygon_uses_locked_zen1_groups_and_formulas() -> None:
         "0xff04",
         "0x0106",
     ]
+    assert "HYGON_L3_PMU_NAME=amd_l3" in env_lines
+    assert "EVENTS_HYGON_L3=0xff04,0x0106" in env_lines
+    assert "NAMES_HYGON_L3=l3_accesses,l3_misses" in env_lines
     run_text = RUN_PATH.read_text(encoding="utf-8")
     assert "metric_basis=Hygon Zen1 proxy" in run_text
-    assert "KPERF_PMU_NAME=amd_l3" in run_text
-    assert "l3 0xff04,0x0106" in run_text
-    assert "l3_accesses,l3_misses uncore" in run_text
+    assert 'KPERF_PMU_NAME="$HYGON_L3_PMU_NAME"' in run_text
+    assert 'l3 "$EVENTS_HYGON_L3"' in run_text
+    assert '"$NAMES_HYGON_L3" uncore' in run_text
 
     topdown_formulas = {
         metric["name"]: metric["formula"] for metric in groups["topdown"]["derived"]

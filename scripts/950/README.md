@@ -52,9 +52,10 @@ Kunpeng DevKit的Topdown结果交叉检查。汇总脚本不裁剪或强行归�
 宿主机执行：
 
 ```bash
-CHIP=950 bash /home/fj/vllm_topdown/scripts/run_topdown.sh
+bash /home/fj/vllm_topdown/scripts/run_topdown.sh
 ```
 
-运行前根据实际容器、项目和模型路径设置 `CONTAINER`、`PROJECT`和
-`MODEL`。输出位于 `results/950/<RUN_ID>`，默认最终工作簿为
+运行前在公共的 `scripts/config.env` 中设置 `CHIP=950`，并根据
+实际环境修改容器、项目和模型路径。输出位于
+`results/950/<RUN_ID>`，默认最终工作簿为
 `950_vllm0.26_qwen3_7k100.xlsx`。

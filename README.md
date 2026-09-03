@@ -88,10 +88,10 @@ Decode行的算术平均。
 ### hotspot与PMU打点的区别
 
 `hotspot` 是另一轮独立运行，此时 `KPERF_ENABLE=0`。脚本只在服务就绪后枚举
-当时的服务进程树，并执行
-`perf record -e cycles:u -F 999 -g --call-graph dwarf`，生成 `perf.data` 和
-`perf report`。它是用户态cycles的999Hz调用栈采样，用于定位CPU热点；不是八段
-区间的精确事件计数，也不参与Topdown公式。
+第一个 `VLLM::Worker`，并执行
+`PYTHONPERFSUPPORT=1 perf record -e cycles:u -c 100000 -p <Worker PID>`，
+生成 `perf.data` 和 `perf report`。它是按用户态cycles事件周期进行的
+平坦符号热点采样；不是八段区间的精确事件计数，也不参与Topdown公式。
 
 以上计数和时间全部属于CPU Host侧。即使 `run_fullgraph` 内部触发
 `CUDAGraph.replay()`，这里统计的也是Host线程执行、同步和提交行为，不是GPU
@@ -102,6 +102,9 @@ cycles或GPU Kernel执行时长。
 
 公共采集和Excel生成代码位于根目录 `kperf_instrument.py` 和 `scripts/`；
 `920b`、`950`、`hygon_c86_7490` 目录只保留各自的事件、公式和配置。
+`scripts/config.env` 集中保存三种芯片共用的运行参数与事件组；每次
+采集结果目录中的 `commands.txt` 保存该次实际展开后的服务、benchmark、
+`perf`、解析和报表命令。
 `scripts/run_topdown.sh` 成功结束时会在结果目录直接生成最终工作簿，默认文件名
 示例为 `920b_vllm0.26_qwen3_7k100.xlsx`。
 
