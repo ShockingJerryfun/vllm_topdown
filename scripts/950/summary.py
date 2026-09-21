@@ -100,6 +100,10 @@ def parse_args() -> argparse.Namespace:
 
 def read_rows(root: Path, group: str, stage: str) -> list[dict[str, str]]:
     path = root / group / "parsed" / f"{stage}.csv"
+    if (root / "collection_profile").is_file() and (
+        root / "collection_profile"
+    ).read_text().strip() == "end_to_end":
+        return []
     with path.open(newline="", encoding="utf-8") as handle:
         return [
             {key: value or "" for key, value in row.items() if key is not None}
@@ -392,6 +396,12 @@ def write_quality(root: Path) -> None:
             (root / "end_to_end", "end_to_end/"),
         )
         for source_root, prefix in quality_roots:
+            if (
+                not prefix
+                and (root / "collection_profile").is_file()
+                and (root / "collection_profile").read_text().strip() == "end_to_end"
+            ):
+                continue
             for group in GROUPS:
                 with (source_root / group / "collection_quality.csv").open(
                     newline="", encoding="utf-8-sig"
@@ -437,7 +447,15 @@ def main() -> int:
                     ]
                 )
         writer.writerow([""])
-        writer.writerow(["热点函数占比：", *("见热点函数" for _ in REPORT_STAGES)])
+        writer.writerow(
+            [
+                "热点函数占比：",
+                *(
+                    "见热点函数" if (args.run_root / "hotspot").exists() else "未采集"
+                    for _ in REPORT_STAGES
+                ),
+            ]
+        )
     write_quality(args.run_root)
     LOGGER.info("wrote %s", output)
     return 0

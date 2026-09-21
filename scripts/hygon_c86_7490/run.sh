@@ -49,7 +49,7 @@ if [[ -z "$VLLM_SITE" ]]; then
     VLLM_SITE=$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')
 fi
 RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
-trap 'rm -rf -- "$RUNTIME"' EXIT
+source "$COMMON_DIR/session.sh"
 cp -rs "$VLLM_SITE" "$RUNTIME/vllm"
 while IFS= read -r -d '' file; do
     relative=${file#"$SOURCE_ROOT/vllm/"}
@@ -79,6 +79,7 @@ record_command "runtime identity" "$RUN_ROOT/runtime.txt" 0 0 \
 "${RUNTIME_COMMAND[@]}" > "$RUN_ROOT/runtime.txt"
 
 EXPECTED_CALLS=$(( RANDOM_OUTPUT_LEN - 1 ))
+start_session
 
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
 PARSE_COMMAND=(
@@ -94,6 +95,10 @@ while IFS='|' read -r label codes names; do
     case "$label" in
         topdown|spec_ls|spec_ase)
             printf 'metric_basis=Hygon Zen1 proxy\n' \
+                >> "$RUN_ROOT/$label/run.env"
+            ;;
+        branch_detail|frontend_detail|backend_detail|memory_detail)
+            printf 'metric_basis=Zen1 candidate; unvalidated on Hygon 7490\n' \
                 >> "$RUN_ROOT/$label/run.env"
             ;;
         dcache)
@@ -119,6 +124,10 @@ spec_ase|$EVENTS_HYGON_SPEC_ASE|$NAMES_HYGON_SPEC_ASE
 icache|$EVENTS_HYGON_ICACHE|$NAMES_HYGON_ICACHE
 dcache|$EVENTS_HYGON_DCACHE|$NAMES_HYGON_DCACHE
 tlb|$EVENTS_HYGON_TLB|$NAMES_HYGON_TLB
+branch_detail|$EVENTS_HYGON_BRANCH_DETAIL|$NAMES_HYGON_BRANCH_DETAIL
+frontend_detail|$EVENTS_HYGON_FRONTEND_DETAIL|$NAMES_HYGON_FRONTEND_DETAIL
+backend_detail|$EVENTS_HYGON_BACKEND_DETAIL|$NAMES_HYGON_BACKEND_DETAIL
+memory_detail|$EVENTS_HYGON_MEMORY_DETAIL|$NAMES_HYGON_MEMORY_DETAIL
 EOF
 
 KPERF_PMU_NAME="$HYGON_L3_PMU_NAME" RUN_ROOT="$RUN_ROOT" \
@@ -135,6 +144,10 @@ record_command "l3 parse" "" 0 0 "${PARSE_COMMAND[@]}"
 "${PARSE_COMMAND[@]}"
 
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
+if [[ ${FREQUENCY_ENABLE:-0} == 1 ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" frequency
+fi
+stop_session
 SUMMARY_COMMAND=("$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT")
 record_command "summary" "" 0 0 "${SUMMARY_COMMAND[@]}"
 "${SUMMARY_COMMAND[@]}"

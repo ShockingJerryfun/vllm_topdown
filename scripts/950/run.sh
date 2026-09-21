@@ -8,6 +8,8 @@ SOURCE_ROOT=$(dirname "$COMMON_DIR")
 set -a
 source "$COMMON_DIR/config.env"
 set +a
+COLLECTION_PROFILE=${COLLECTION_PROFILE:-full}
+case "$COLLECTION_PROFILE" in full|end_to_end) ;; *) exit 2 ;; esac
 RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/950}
 "$PYTHON_BIN" -c 'import openpyxl' >/dev/null 2>&1 || {
     printf 'Missing openpyxl; install scripts/requirements-report.txt\n' >&2
@@ -39,7 +41,7 @@ if [[ -z "$VLLM_SITE" ]]; then
     VLLM_SITE=$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')
 fi
 RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
-trap 'rm -rf -- "$RUNTIME"' EXIT
+source "$COMMON_DIR/session.sh"
 cp -rs "$VLLM_SITE" "$RUNTIME/vllm"
 while IFS= read -r -d '' file; do
     relative=${file#"$SOURCE_ROOT/vllm/"}
@@ -71,9 +73,11 @@ record_command "runtime identity" "$RUN_ROOT/runtime.txt" 0 0 \
 "${RUNTIME_COMMAND[@]}" > "$RUN_ROOT/runtime.txt"
 
 EXPECTED_CALLS=$(( RANDOM_OUTPUT_LEN - 1 ))
+start_session
 END_TO_END_STAGE=execute_model_to_sample_tokens
 END_TO_END_ROOT="$RUN_ROOT/end_to_end"
 
+if [[ "$COLLECTION_PROFILE" == full ]]; then
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
 PARSE_COMMAND=(
     "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/time"
@@ -107,6 +111,9 @@ branch|$EVENTS_950_BRANCH
 imix|$EVENTS_950_IMIX
 imix2|$EVENTS_950_IMIX2
 EOF
+
+fi
+printf '%s\n' "$COLLECTION_PROFILE" > "$RUN_ROOT/collection_profile"
 
 install -d -m 755 "$END_TO_END_ROOT"
 : > "$END_TO_END_ROOT/commands.txt"
@@ -149,7 +156,13 @@ imix|$EVENTS_950_IMIX
 imix2|$EVENTS_950_IMIX2
 EOF
 
-RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
+if [[ "$COLLECTION_PROFILE" == full ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
+fi
+if [[ ${FREQUENCY_ENABLE:-0} == 1 ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" frequency
+fi
+stop_session
 SUMMARY_COMMAND=("$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT")
 record_command "summary" "" 0 0 "${SUMMARY_COMMAND[@]}"
 "${SUMMARY_COMMAND[@]}"
@@ -162,6 +175,7 @@ BUILD_COMMAND=(
     --model-short "$MODEL_SHORT"
     --input-len "$RANDOM_INPUT_LEN"
     --output-len "$RANDOM_OUTPUT_LEN"
+    --compact-report
     --include-end-to-end
 )
 record_command "Excel report" "" 0 0 "${BUILD_COMMAND[@]}"

@@ -27,6 +27,7 @@
       "event_headers": ["0xc0", "0xc2", "0xc3"],
       "semantic_headers": ["instructions", "branches", "branch_misses"],
       "derived": [
+        {"name": "branch_spec", "number_format": "0.00%", "formula": "=IFERROR({branches}/{instructions},\"\")"},
         {"name": "br missrate", "number_format": "0.00%", "formula": "=IFERROR({branch_misses}/{branches},\"\")"},
         {"name": "br mpki", "number_format": "0.00", "formula": "=IFERROR({branch_misses}/{instructions}*1000,\"\")"}
       ]
@@ -45,8 +46,7 @@
       ],
       "derived": [
         {"name": "ld_spec", "number_format": "0.00%", "formula": "=IFERROR({load_ops}/{dispatched_uops},\"\")"},
-        {"name": "st_spec", "number_format": "0.00%", "formula": "=IFERROR(({store_ops}+{load_store_ops})/{dispatched_uops},\"\")"},
-        {"name": "branch_spec", "number_format": "0.00%", "formula": "=IFERROR({branches}/{dispatched_uops},\"\")"}
+        {"name": "st_spec", "number_format": "0.00%", "formula": "=IFERROR(({store_ops}+{load_store_ops})/{dispatched_uops},\"\")"}
       ]
     },
     {
@@ -112,6 +112,168 @@
         {"name": "stlb missrate", "number_format": "0.00%", "formula": "=IFERROR({stlb_misses}/({stlb_hits}+{stlb_misses}),\"\")"},
         {"name": "stlb mpki", "number_format": "0.00", "formula": "=IFERROR({stlb_misses}/{instructions}*1000,\"\")"}
       ]
+    },
+    {
+      "name": "branch_detail",
+      "suffix": "BR_DETAIL",
+      "events": [
+        "branch_misses",
+        "indirect_branch_misses",
+        "return_misses",
+        "returns"
+      ],
+      "event_headers": [
+        "0xc3",
+        "0xca",
+        "0xc9",
+        "0xc8"
+      ],
+      "derived": [
+        {
+          "name": "Indirect Branch",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({indirect_branch_misses}/{branch_misses},\"\")"
+        },
+        {
+          "name": "Pop Branch",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({return_misses}/{branch_misses},\"\")"
+        },
+        {
+          "name": "Return missrate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({return_misses}/{returns},\"\")"
+        }
+      ],
+      "semantic_headers": [
+        "branch_misses",
+        "indirect_branch_misses",
+        "return_misses",
+        "returns"
+      ],
+      "metric_basis": "Zen1 candidate; unvalidated on Hygon C86 7490",
+      "source": "https://github.com/torvalds/linux/tree/master/tools/perf/pmu-events/arch/x86/amdzen1"
+    },
+    {
+      "name": "frontend_detail",
+      "suffix": "FE_DETAIL",
+      "events": [
+        "cycles",
+        "ic_dq_empty",
+        "ic_backpressure"
+      ],
+      "event_headers": [
+        "0x76",
+        "0x0287",
+        "0x0187"
+      ],
+      "derived": [
+        {
+          "name": "IC DQ empty",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({ic_dq_empty}/{cycles},\"\")"
+        },
+        {
+          "name": "IC backpressure",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({ic_backpressure}/{cycles},\"\")"
+        }
+      ],
+      "semantic_headers": [
+        "cycles",
+        "ic_dq_empty",
+        "ic_backpressure"
+      ],
+      "metric_basis": "Zen1 candidate; unvalidated on Hygon C86 7490",
+      "source": "https://github.com/torvalds/linux/tree/master/tools/perf/pmu-events/arch/x86/amdzen1"
+    },
+    {
+      "name": "backend_detail",
+      "suffix": "BE_DETAIL",
+      "events": [
+        "cycles",
+        "div_busy",
+        "alu_token_stall",
+        "alsq_token_stall",
+        "retire_token_stall"
+      ],
+      "event_headers": [
+        "0x76",
+        "0xd3",
+        "0x10af",
+        "0x08af",
+        "0x40af"
+      ],
+      "derived": [
+        {
+          "name": "DIV busy",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({div_busy}/{cycles},\"\")"
+        },
+        {
+          "name": "ALU token stall",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({alu_token_stall}/{cycles},\"\")"
+        },
+        {
+          "name": "ALSQ token stall",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({alsq_token_stall}/{cycles},\"\")"
+        },
+        {
+          "name": "Retire token stall",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({retire_token_stall}/{cycles},\"\")"
+        }
+      ],
+      "semantic_headers": [
+        "cycles",
+        "div_busy",
+        "alu_token_stall",
+        "alsq_token_stall",
+        "retire_token_stall"
+      ],
+      "metric_basis": "Zen1 candidate; unvalidated on Hygon C86 7490",
+      "source": "https://github.com/torvalds/linux/tree/master/tools/perf/pmu-events/arch/x86/amdzen1"
+    },
+    {
+      "name": "memory_detail",
+      "suffix": "MEM_DETAIL",
+      "events": [
+        "cycles",
+        "l2_fill_pending",
+        "instructions",
+        "itlb_l2_hit",
+        "itlb_l2_miss"
+      ],
+      "event_headers": [
+        "0x76",
+        "0x016d",
+        "0xc0",
+        "0x84",
+        "0x85"
+      ],
+      "derived": [
+        {
+          "name": "L2 fill pending",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({l2_fill_pending}/{cycles},\"\")"
+        },
+        {
+          "name": "iTLB MPKI（候选）",
+          "number_format": "0.00",
+          "formula": "=IFERROR(({itlb_l2_hit}+{itlb_l2_miss})/{instructions}*1000,\"\")"
+        }
+      ],
+      "semantic_headers": [
+        "cycles",
+        "l2_fill_pending",
+        "instructions",
+        "itlb_l2_hit",
+        "itlb_l2_miss"
+      ],
+      "metric_basis": "Zen1 candidate; unvalidated on Hygon C86 7490",
+      "source": "https://github.com/torvalds/linux/tree/master/tools/perf/pmu-events/arch/x86/amdzen1"
     },
     {
       "name": "l3",

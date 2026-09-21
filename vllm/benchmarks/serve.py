@@ -1884,7 +1884,16 @@ def main(args: argparse.Namespace) -> dict[str, Any]:
     return asyncio.run(main_async(args))
 
 
-async def main_async(args: argparse.Namespace) -> dict[str, Any]:
+@dataclass
+class PreparedBenchmark:
+    kwargs: dict[str, Any]
+    model_id: str
+    tokenizer_id: str | None
+    python_random_state: tuple
+    numpy_random_state: tuple
+
+
+async def prepare_benchmark(args: argparse.Namespace) -> PreparedBenchmark:
     print(args)
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -1921,8 +1930,6 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("Ramp-up start RPS must be less than end RPS")
         if args.ramp_up_strategy == "exponential" and args.ramp_up_start_rps == 0:
             raise ValueError("For exponential ramp-up, the start RPS cannot be 0.")
-
-    label = args.label
 
     if args.base_url is not None:
         api_url = f"{args.base_url}{args.endpoint}"
@@ -2092,7 +2099,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     # Avoid GC processing "static" data - reduce pause times.
     freeze_gc_heap()
 
-    benchmark_result = await benchmark(
+    kwargs = dict(
         task_type=task_type,
         endpoint_type=backend,
         api_url=api_url,
@@ -2123,6 +2130,23 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         ssl_context=ssl_context,
         self_timed=args.self_timed,
     )
+
+    return PreparedBenchmark(
+        kwargs, model_id, tokenizer_id, random.getstate(), np.random.get_state()
+    )
+
+
+async def main_async(
+    args: argparse.Namespace, prepared: PreparedBenchmark | None = None
+) -> dict[str, Any]:
+    if prepared is None:
+        prepared = await prepare_benchmark(args)
+    random.setstate(prepared.python_random_state)
+    np.random.set_state(prepared.numpy_random_state)
+    benchmark_result = await benchmark(**prepared.kwargs)
+    label = args.label
+    model_id = prepared.model_id
+    tokenizer_id = prepared.tokenizer_id
 
     # Save config and results to json
     result_json: dict[str, Any] = {}

@@ -7,15 +7,16 @@ import json
 import struct
 from argparse import Namespace
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from pytest import MonkeyPatch, approx
+from pytest import MonkeyPatch, approx, fixture, mark, raises
 
 import kperf_instrument
-from scripts import build_xlsx, parse_run
+from scripts import build_xlsx, parse_run, switch_pmu
 
 
-def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+def write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
@@ -34,6 +35,164 @@ def test_group_reader_preserves_requested_event_order(
     monkeypatch.setattr(kperf_instrument.os, "read", lambda _fd, _size: payload)
 
     assert kperf_instrument.read_group([3, 4], [11, 22]) == (100, 100, [5, 7])
+
+
+@fixture
+def controlled_collector(monkeypatch: MonkeyPatch) -> None:
+    for name in (
+        "MODE",
+        "EVENTS",
+        "NAMES",
+        "SCOPE",
+        "PMU_NAME",
+        "ENABLED",
+        "OWNER_TID",
+        "TARGET_STAGE",
+        "QUALIFIER_STAGE",
+        "CALL",
+        "NAME",
+        "QUALIFIED",
+        "ACTIVE",
+        "WALL_START_NS",
+        "THREAD_START_NS",
+        "WALL_OVERHEAD_NS",
+        "THREAD_OVERHEAD_NS",
+    ):
+        monkeypatch.setattr(kperf_instrument, name, getattr(kperf_instrument, name))
+    monkeypatch.setattr(kperf_instrument, "CONTROL_ENABLED", True)
+    monkeypatch.setattr(kperf_instrument, "OWNER_TID", 0)
+    monkeypatch.setattr(kperf_instrument, "ACTIVE", False)
+    monkeypatch.setattr(kperf_instrument, "COUNTER_GROUPS", [])
+    monkeypatch.setattr(kperf_instrument, "GROUP_TIMES", {})
+
+
+def test_runtime_switch_closes_old_events_and_keeps_function_counting(
+    monkeypatch: MonkeyPatch,
+    controlled_collector: None,
+) -> None:
+    """Switching does not enable counters; begin/finish still own that boundary."""
+    messages: list[str] = []
+    operations: list[tuple] = []
+    next_fd = iter(range(10, 20))
+
+    def fake_open(*args, **kwargs):
+        fd = next(next_fd)
+        operations.append(("open", fd))
+        return fd
+
+    monkeypatch.setattr(kperf_instrument, "open_event", fake_open)
+    monkeypatch.setattr(kperf_instrument, "event_id", lambda fd: fd + 100)
+    monkeypatch.setattr(kperf_instrument, "emit", messages.append)
+    monkeypatch.setattr(
+        kperf_instrument.os, "close", lambda fd: operations.append(("close", fd))
+    )
+    monkeypatch.setattr(
+        kperf_instrument.fcntl,
+        "ioctl",
+        lambda fd, op, flag: operations.append(("ioctl", fd, op, flag)),
+    )
+    first = kperf_instrument.configure("pmu", "0x11", "cycles", round_id="first")
+    assert operations == [("open", 10)]
+    assert first["event_ids"] == [[110]]
+    totals = iter((100, 240))
+
+    def fake_read(fd, size):
+        total = next(totals)
+        return struct.pack("<QQQQQ", 1, total, total, 17, 110)
+
+    monkeypatch.setattr(kperf_instrument.os, "read", fake_read)
+    for _ in range(2):
+        kperf_instrument.kperf_begin("sample")
+        kperf_instrument.kperf_finish("sample")
+    assert messages[-2:] == [
+        "KPERF,sample,1,100,100,1,17",
+        "KPERF,sample,2,140,140,1,17",
+    ]
+    second = kperf_instrument.configure("pmu", "0x8", "instructions", round_id="second")
+    assert second["tid"] == first["tid"]
+    assert second["pid"] == first["pid"]
+    assert operations[-2:] == [("close", 10), ("open", 11)]
+    assert kperf_instrument.CALL == 0
+    assert kperf_instrument.GROUP_TIMES == {}
+    kperf_instrument.configure("disabled")
+    assert not kperf_instrument.COUNTER_GROUPS
+    assert not kperf_instrument.ENABLED
+    count = len(messages)
+    kperf_instrument.kperf_begin("sample")
+    kperf_instrument.kperf_finish("sample")
+    assert len(messages) == count
+
+
+def test_runtime_switch_rejects_active_or_different_thread(
+    monkeypatch: MonkeyPatch,
+    controlled_collector: None,
+) -> None:
+    monkeypatch.setattr(kperf_instrument, "ACTIVE", True)
+    with raises(RuntimeError, match="idle collector"):
+        kperf_instrument.configure("disabled")
+    monkeypatch.setattr(kperf_instrument, "ACTIVE", False)
+    monkeypatch.setattr(kperf_instrument, "OWNER_TID", -1)
+    with raises(RuntimeError, match="owner thread"):
+        kperf_instrument.configure("time")
+
+
+def test_runtime_switch_failure_does_not_collect_the_previous_group(
+    monkeypatch: MonkeyPatch,
+    controlled_collector: None,
+) -> None:
+    def fail_open(*args, **kwargs):
+        raise OSError("unsupported event")
+
+    monkeypatch.setattr(kperf_instrument, "open_event", fail_open)
+    with raises(RuntimeError, match="Failed to open"):
+        kperf_instrument.configure("pmu", "0xffff", "unsupported")
+    assert not kperf_instrument.ENABLED
+    assert not kperf_instrument.COUNTER_GROUPS
+
+
+def test_switch_client_drains_then_resumes_only_after_matching_ack(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+    worker = {"pid": 10, "tid": 12}
+
+    def fake_post(url, payload, timeout):
+        calls.append((url, payload))
+        if url.endswith("collective_rpc"):
+            params = payload["kwargs"]
+            return {
+                "results": [
+                    {
+                        **worker,
+                        "round_id": params["round_id"],
+                        "mode": params["mode"],
+                        "events": [17] if params["mode"] == "pmu" else [],
+                        "names": ["cycles"] if params["mode"] == "pmu" else [],
+                    }
+                ]
+            }
+        return {}
+
+    monkeypatch.setattr(switch_pmu, "post", fake_post)
+    monkeypatch.setenv("KPERF_MODE", "pmu")
+    monkeypatch.setenv("KPERF_RAW_EVENTS", "0x11")
+    monkeypatch.setenv("KPERF_EVENT_NAMES", "cycles")
+    identity = tmp_path / "worker.json"
+    switch_pmu.switch("http://local", "one", identity, False, 10)
+    assert [url for url, _ in calls] == [
+        "http://local/pause?mode=wait&clear_cache=false",
+        "http://local/collective_rpc",
+        "http://local/resume",
+    ]
+    calls.clear()
+    switch_pmu.switch("http://local", "one", identity, True, 10)
+    assert not any(url.endswith("resume") for url, _ in calls)
+    calls.clear()
+    worker["tid"] = 99
+    with raises(RuntimeError, match="PID/TID changed"):
+        switch_pmu.switch("http://local", "two", identity, False, 10)
+    assert not any(url.endswith("resume") for url, _ in calls)
 
 
 def test_target_span_ignores_nested_stages_and_marks_fullgraph(
@@ -79,7 +238,7 @@ def test_target_span_ignores_nested_stages_and_marks_fullgraph(
 def test_uncore_group_opens_systemwide_on_representative_cpu(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    calls: list[tuple[int, int, int, int, bool, bool]] = []
+    calls: list[tuple[int, int, int, int, int, bool, bool]] = []
 
     def fake_open_event(
         event: int,
@@ -120,7 +279,7 @@ def test_shared_summaries_use_aggregate_ratios(
             defaultdict(lambda: "1", **{"0x0008": "9", "0x0021": "9", "0x0022": "1"}),
         ],
     }
-    default_rows = [defaultdict(lambda: "1")]
+    default_rows: list[dict[str, str]] = [defaultdict(lambda: "1")]
 
     for module_name in ("scripts.920b.summary", "scripts.950.summary"):
         module = importlib.import_module(module_name)
@@ -165,7 +324,7 @@ def test_all_chip_summaries_keep_the_common_metric_order(
     expected = [
         metric for metric in build_xlsx.SUMMARY_METRICS if metric != "cycle占比"
     ]
-    rows = [defaultdict(lambda: "1")]
+    rows: list[dict[str, str]] = [defaultdict(lambda: "1")]
 
     for module_name in (
         "scripts.920b.summary",
@@ -268,7 +427,8 @@ def test_arm_event_groups_match_report_configs() -> None:
 
     assert 'HOTSPOT_WORKER_PATTERN="VLLM::Worker_TP"' in env_text
     run_one = (root / "scripts" / "run_one.sh").read_text(encoding="utf-8")
-    assert 'pgrep -w -x "$HOTSPOT_WORKER_PATTERN"' in run_one
+    assert "pgrep" not in run_one
+    assert 'placement.py" worker --api' in run_one
 
 
 def test_arm_end_to_end_cycles_do_not_change_pipeline_shares() -> None:
@@ -328,7 +488,7 @@ def test_arm_l2_l3_summary_formulas(monkeypatch: MonkeyPatch) -> None:
             )
         ],
     }
-    defaults = [defaultdict(lambda: "1")]
+    defaults: list[dict[str, str]] = [defaultdict(lambda: "1")]
 
     for chip, slots in (("920b", 6), ("950", 8)):
         module = importlib.import_module(f"scripts.{chip}.summary")
@@ -578,7 +738,7 @@ def test_end_to_end_detail_sheets_are_opt_in() -> None:
     )
 
 
-def test_time_benchmark_is_appended_to_summary(tmp_path: Path) -> None:
+def test_frequency_benchmark_is_appended_to_summary(tmp_path: Path) -> None:
     summary_path = tmp_path / "summary.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -586,7 +746,7 @@ def test_time_benchmark_is_appended_to_summary(tmp_path: Path) -> None:
         for metric in build_xlsx.SUMMARY_METRICS:
             writer.writerow([metric, "1"])
 
-    benchmark = tmp_path / "time" / "benchmark.log"
+    benchmark = tmp_path / "frequency" / "benchmark.log"
     benchmark.parent.mkdir(parents=True)
     benchmark.write_text(
         "\n".join(
@@ -607,7 +767,7 @@ def test_time_benchmark_is_appended_to_summary(tmp_path: Path) -> None:
     worksheet = workbook.active
     build_xlsx.write_summary(worksheet, tmp_path)
     labels = [worksheet.cell(row, 1).value for row in range(1, worksheet.max_row + 1)]
-    header_row = labels.index("time轮Benchmark") + 1
+    header_row = labels.index("Benchmark") + 1
     assert worksheet.cell(header_row, 2).value == "数值"
     assert worksheet.cell(header_row + 1, 1).value == "Successful requests"
     assert worksheet.cell(header_row + 1, 2).value == 1
@@ -619,7 +779,9 @@ def test_time_benchmark_is_appended_to_summary(tmp_path: Path) -> None:
     workbook.close()
 
 
+@mark.parametrize("end_only", [False, True])
 def test_arm_workbooks_generate_with_frontend_metrics_and_benchmark(
+    end_only: bool,
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -676,20 +838,22 @@ def test_arm_workbooks_generate_with_frontend_metrics_and_benchmark(
                         [counters],
                     )
 
-        write_profile(run_root, summary.STAGES, groups)
+        if not end_only:
+            write_profile(run_root, summary.STAGES, groups)
         include_end_to_end = True
         write_profile(
             run_root / "end_to_end",
             (summary.END_TO_END_STAGE,),
             groups,
         )
-        (run_root / "time" / "benchmark.log").write_text(
-            benchmark_text,
-            encoding="utf-8",
-        )
-        hotspot = run_root / "hotspot" / "perf_report.txt"
-        hotspot.parent.mkdir(parents=True)
-        hotspot.write_text("# Samples: 1\n100.00% worker\n", encoding="utf-8")
+        (run_root / "frequency").mkdir()
+        (run_root / "frequency" / "benchmark.log").write_text(benchmark_text)
+        if end_only:
+            (run_root / "collection_profile").write_text("end_to_end\n")
+        else:
+            hotspot = run_root / "hotspot" / "perf_report.txt"
+            hotspot.parent.mkdir(parents=True)
+            hotspot.write_text("# Samples: 1\n100.00% worker\n")
 
         monkeypatch.setattr(
             summary,
@@ -730,7 +894,7 @@ def test_arm_workbooks_generate_with_frontend_metrics_and_benchmark(
             assert labels.index(fetch_latency_label) == (
                 labels.index("FrontendBound") + 1
             )
-            assert labels.index("time轮Benchmark") > labels.index("热点函数占比：")
+            assert labels.index("Benchmark") > labels.index("热点函数占比：")
             assert build_xlsx.summary_display_label("cycle占比") == "cycle占比"
             assert fetch_latency_label == "-- Fetch Latency Bound"
             assert itlb_label == "---- Idle by iTLB Miss"
@@ -752,7 +916,15 @@ def test_arm_workbooks_generate_with_frontend_metrics_and_benchmark(
             )
             benchmark_row = labels.index("Successful requests") + 1
             assert workbook["汇总"].cell(benchmark_row, 2).value == 1
-            if chip == "920b":
+            if end_only:
+                assert workbook["汇总"]["C2"].value == "未采集"
+                assert workbook["热点函数"]["A2"].value == "未采集（仅端到端模式）"
+                assert (
+                    workbook["add_requests TOPDOWN"]["A2"].value
+                    == "未采集（仅端到端模式）"
+                )
+                assert workbook["execute_to_sample TOPDOWN"]["I2"].value == 100
+            elif chip == "920b":
                 detail = workbook["add_requests FLUSH"]
                 assert detail["N2"].value == '=IFERROR(J2*5/I2,"")'
                 assert detail["O2"].value == '=IFERROR(K2*9/I2,"")'

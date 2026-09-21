@@ -4,10 +4,11 @@
 import csv
 import json
 from argparse import Namespace
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
-from pytest import MonkeyPatch, approx
+from pytest import MonkeyPatch, approx, mark
 
 from scripts import build_xlsx
 from scripts.hygon_c86_7490 import summary
@@ -46,10 +47,26 @@ EXPECTED_CORE_GROUPS = {
         "0xc0,0x0729,0xff45,0x0f45,0xf045",
         "instructions,ls_ops,l1_dtlb_misses,stlb_hits,stlb_misses",
     ),
+    "branch_detail": (
+        "0xc3,0xca,0xc9,0xc8",
+        "branch_misses,indirect_branch_misses,return_misses,returns",
+    ),
+    "frontend_detail": (
+        "0x76,0x0287,0x0187",
+        "cycles,ic_dq_empty,ic_backpressure",
+    ),
+    "backend_detail": (
+        "0x76,0xd3,0x10af,0x08af,0x40af",
+        "cycles,div_busy,alu_token_stall,alsq_token_stall,retire_token_stall",
+    ),
+    "memory_detail": (
+        "0x76,0x016d,0xc0,0x84,0x85",
+        "cycles,l2_fill_pending,instructions,itlb_l2_hit,itlb_l2_miss",
+    ),
 }
 
 
-def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+def write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
@@ -81,7 +98,7 @@ def sample_rows() -> dict[str, list[dict[str, str]]]:
         ],
         "branch": [
             {"instructions": "10", "branches": "1", "branch_misses": "1"},
-            {"instructions": "990", "branches": "99", "branch_misses": "9"},
+            {"instructions": "990", "branches": "199", "branch_misses": "9"},
         ],
         "spec_ls": [
             {
@@ -121,6 +138,41 @@ def sample_rows() -> dict[str, list[dict[str, str]]]:
             }
         ],
         "l3": [{"l3_accesses": "200", "l3_misses": "20"}],
+        "branch_detail": [
+            {
+                "branch_misses": "10",
+                "indirect_branch_misses": "4",
+                "return_misses": "1",
+                "returns": "20",
+            },
+            {
+                "branch_misses": "90",
+                "indirect_branch_misses": "6",
+                "return_misses": "4",
+                "returns": "80",
+            },
+        ],
+        "frontend_detail": [
+            {"cycles": "1000", "ic_dq_empty": "100", "ic_backpressure": "200"}
+        ],
+        "backend_detail": [
+            {
+                "cycles": "1000",
+                "div_busy": "50",
+                "alu_token_stall": "20",
+                "alsq_token_stall": "30",
+                "retire_token_stall": "40",
+            }
+        ],
+        "memory_detail": [
+            {
+                "cycles": "1000",
+                "l2_fill_pending": "250",
+                "instructions": "2000",
+                "itlb_l2_hit": "8",
+                "itlb_l2_miss": "2",
+            }
+        ],
     }
 
 
@@ -135,9 +187,7 @@ def test_hygon_uses_locked_zen1_groups_and_formulas() -> None:
         suffix = name.upper()
         assert f"EVENTS_HYGON_{suffix}={events}" in env_lines
         assert f"NAMES_HYGON_{suffix}={event_names}" in env_lines
-        assert (
-            f"{name}|$EVENTS_HYGON_{suffix}|$NAMES_HYGON_{suffix}" in run_lines
-        )
+        assert f"{name}|$EVENTS_HYGON_{suffix}|$NAMES_HYGON_{suffix}" in run_lines
         assert len(events.split(",")) <= 5
 
     assert groups["dcache"]["events"] == [
@@ -197,12 +247,17 @@ def test_hygon_summary_uses_aggregate_ratios(monkeypatch: MonkeyPatch) -> None:
     assert metrics["FrontendBound"] == approx(0.1)
     assert metrics["BadSpec"] == approx(0.06)
     assert metrics["BackendBound"] == approx(0.39)
+    assert metrics["Indirect Branch"] == approx(0.1)
+    assert metrics["Pop Branch"] == approx(0.05)
+    # Related Zen1 diagnostics must not masquerade as Topdown stall attribution.
+    for name in ("DIV Stall", "Resource Bound", "L2 Bound", "Fetch Latency Bound"):
+        assert metrics[name] is None
     assert metrics["dp_spec"] == approx(0.45)
     assert metrics["ld_spec"] == approx(0.2)
     assert metrics["st_spec"] == approx(0.15)
-    assert metrics["branch_spec"] == approx(0.1)
+    assert metrics["branch_spec"] == approx(0.2)
     assert metrics["ase_spec"] == approx(0.1)
-    assert metrics["br missrate"] == approx(0.1)
+    assert metrics["br missrate"] == approx(0.05)
     assert metrics["br mpki"] == approx(10)
     assert metrics["l1i missrate"] == approx(0.1)
     assert metrics["l1i mpki"] == approx(20)
@@ -227,6 +282,31 @@ def test_hygon_summary_uses_aggregate_ratios(monkeypatch: MonkeyPatch) -> None:
         if label != summary.CYCLES_SHARE_METRIC
     ]
     assert list(metrics) == expected_labels
+
+
+@mark.parametrize("instructions", ["0", "1000"])
+def test_branch_spec_is_independent_of_invalid_uop_proxy(
+    monkeypatch: MonkeyPatch,
+    instructions: str,
+) -> None:
+    rows_by_group = sample_rows()
+    rows_by_group["branch"] = [
+        {"instructions": instructions, "branches": "200", "branch_misses": "10"}
+    ]
+    rows_by_group["spec_ls"][0]["branches"] = "1000"
+    monkeypatch.setattr(
+        summary,
+        "read_rows",
+        lambda _root, group, _stage: rows_by_group[group],
+    )
+
+    metrics = summary.stage_metrics(Path(), "add_requests")
+
+    assert metrics["dp_spec"] == summary.INVALID
+    if instructions == "0":
+        assert metrics["branch_spec"] is None
+    else:
+        assert metrics["branch_spec"] == approx(0.2)
 
 
 def test_proxy_sums_above_limit_are_invalid() -> None:
@@ -290,7 +370,12 @@ def test_summary_places_cycle_share_below_cycles(
     worksheet = workbook.active
     build_xlsx.write_summary(worksheet, tmp_path)
     labels = [worksheet.cell(row, 1).value for row in range(1, worksheet.max_row + 1)]
-    metric_labels = [label for label in labels if label in build_xlsx.SUMMARY_METRICS]
+    # The existing summary template prefixes nested metrics with hierarchy marks.
+    metric_labels = [
+        label.lstrip("- ")
+        for label in labels
+        if isinstance(label, str) and label.lstrip("- ") in build_xlsx.SUMMARY_METRICS
+    ]
     assert metric_labels == list(build_xlsx.SUMMARY_METRICS)
     cycles_row = labels.index("cycles") + 1
     share_row = labels.index("cycle占比") + 1
@@ -369,7 +454,14 @@ def test_hygon_workbook_generation(
     output = build_xlsx.build_workbook(args, groups)
     workbook = load_workbook(output, data_only=False)
     try:
-        assert workbook.sheetnames == build_xlsx.expected_sheet_names(groups)
+        assert workbook.sheetnames == build_xlsx.expected_sheet_names(
+            groups, include_zen1=True
+        )
+        diagnostics = workbook["Zen1诊断（待验证）"]
+        assert "7490未验证" in diagnostics.cell(1, 1).value
+        assert diagnostics.cell(2, 1).value == "Return missrate"
+        assert diagnostics.cell(2, 2).value == approx(0.05)
+        assert diagnostics.cell(2, 2).number_format == "0.00%"
         labels = [
             workbook["汇总"].cell(row, 1).value
             for row in range(1, workbook["汇总"].max_row + 1)
@@ -379,6 +471,12 @@ def test_hygon_workbook_generation(
         assert labels.index("IPC") + 1 == labels.index("Retire")
         itlb_row = labels.index("itlb missrate") + 1
         assert workbook["汇总"].cell(itlb_row, 2).value == "未支持"
+        branch_sheet = workbook["add_requests BRANCH"]
+        assert branch_sheet.cell(2, 12).value == "branch_spec"
+        assert branch_sheet.cell(3, 12).value == '=IFERROR(J3/I3,"")'
+        assert branch_sheet.cell(3, 12).number_format == "0.00%"
+        spec_sheet = workbook["add_requests SPEC_LS"]
+        assert "branch_spec" not in [cell.value for cell in spec_sheet[2]]
         l3_sheet = workbook["add_requests L3"]
         assert l3_sheet.cell(1, 9).value == "l3_accesses"
         assert l3_sheet.cell(1, 10).value == "l3_misses"
@@ -387,3 +485,34 @@ def test_hygon_workbook_generation(
         assert l3_sheet.cell(3, 11).value == '=IFERROR(J3/I3,"")'
     finally:
         workbook.close()
+
+
+def test_zen1_diagnostics_use_same_group_counters(monkeypatch: MonkeyPatch) -> None:
+    rows = sample_rows()
+    monkeypatch.setattr(summary, "read_rows", lambda _root, group, _stage: rows[group])
+    assert summary.diagnostic_metrics(Path(), "sample") == approx(
+        {
+            "Return missrate": 0.05,
+            "IC DQ empty": 0.1,
+            "IC backpressure": 0.2,
+            "ALU token stall": 0.02,
+            "ALSQ token stall": 0.03,
+            "Retire token stall": 0.04,
+            "DIV busy": 0.05,
+            "L2 fill pending": 0.25,
+            "iTLB MPKI（候选）": 5.0,
+        }
+    )
+    for group in summary.ZEN1_GROUPS:
+        rows[group] = []
+    assert set(summary.diagnostic_metrics(Path(), "sample").values()) == {None}
+
+
+def test_zen1_missing_group_differs_from_zero_counter(tmp_path: Path) -> None:
+    assert set(summary.diagnostic_metrics(tmp_path, "sample").values()) == {None}
+    rows = sample_rows()["memory_detail"]
+    rows[0]["itlb_l2_hit"] = "0"
+    rows[0]["itlb_l2_miss"] = "0"
+    write_csv(tmp_path / "memory_detail/parsed/sample.csv", [{"valid": "1", **rows[0]}])
+    assert summary.diagnostic_metrics(tmp_path, "sample")["iTLB MPKI（候选）"] == 0
+    assert "零计数不能证明" in summary.DIAGNOSTIC_NOTES["iTLB MPKI（候选）"]

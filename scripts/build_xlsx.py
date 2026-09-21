@@ -6,10 +6,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
+import shutil
+import subprocess
+import sys
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
+from zipfile import ZipFile
 
 import regex as re
 from openpyxl import Workbook, load_workbook
@@ -240,6 +246,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-len", type=int, default=7000)
     parser.add_argument("--output-len", type=int, default=100)
     parser.add_argument("--include-end-to-end", action="store_true")
+    parser.add_argument("--compact-report", action="store_true")
+    parser.add_argument("--spe-dir", type=Path)
+    parser.add_argument("--spe-report", type=Path)
     return parser.parse_args()
 
 
@@ -428,6 +437,11 @@ def write_detail_section(
     stage: str,
     start_row: int,
 ) -> int:
+    profile_path = run_root / "collection_profile"
+    if profile_path.is_file() and profile_path.read_text().strip() == "end_to_end":
+        worksheet.cell(start_row, 1, stage)
+        worksheet.cell(start_row + 1, 1, "未采集（仅端到端模式）")
+        return start_row + 3
     rows = load_stage_rows(run_root, group, stage)
     header_rows = 2 if group.semantic_headers else 1
     body_start = start_row + header_rows
@@ -550,8 +564,8 @@ def summary_value(value: str) -> tuple[object, str]:
     return stripped, "General"
 
 
-def read_time_benchmark(run_root: Path) -> list[tuple[str, str]]:
-    path = run_root / "time" / "benchmark.log"
+def read_frequency_benchmark(run_root: Path) -> list[tuple[str, str]]:
+    path = run_root / "frequency" / "benchmark.log"
     if not path.is_file():
         return []
 
@@ -632,7 +646,7 @@ def style_summary_row(cell: Cell, metric: str, column_index: int) -> None:
 
 def write_summary(worksheet: Worksheet, run_root: Path) -> None:
     rows = normalize_summary_rows(read_matrix(run_root / "summary.csv"))
-    benchmark_rows = read_time_benchmark(run_root)
+    benchmark_rows = read_frequency_benchmark(run_root)
     width = len(rows[0])
     for row_index, row in enumerate(rows, 1):
         for column_index, raw_value in enumerate(row, 1):
@@ -652,7 +666,7 @@ def write_summary(worksheet: Worksheet, run_root: Path) -> None:
             worksheet.row_dimensions[row_index].height = 21
 
     benchmark_header_row = len(rows) + 2
-    for column_index, value in enumerate(("time轮Benchmark", "数值"), 1):
+    for column_index, value in enumerate(("Benchmark", "数值"), 1):
         cell = worksheet.cell(benchmark_header_row, column_index, value)
         cell.font = Font(name="Carlito", size=11, bold=True, color=WHITE)
         cell.fill = PatternFill("solid", fgColor=HEADER_FILL)
@@ -684,12 +698,30 @@ def write_summary(worksheet: Worksheet, run_root: Path) -> None:
         value_cell.alignment = Alignment(horizontal="center", vertical="center")
         value_cell.number_format = number_format
 
+    frequency_path = run_root / "frequency" / "summary.json"
+    if frequency_path.is_file():
+        frequency = json.loads(frequency_path.read_text())
+        first = benchmark_header_row + len(display_rows) + 2
+        frequency_rows = [
+            ("独立推理轮频率", "平均值 (MHz)"),
+            ("Worker Core", frequency["core_mhz"]),
+            (f"NUMA {frequency['numa_node']} Uncore", frequency["uncore_mhz"]),
+        ]
+        for offset, values in enumerate(frequency_rows):
+            for column, value in enumerate(values, 1):
+                cell = worksheet.cell(first + offset, column, value)
+                reference = worksheet.cell(benchmark_header_row + (offset > 0), column)
+                cell._style = copy(reference._style)
+                if offset and column == 2:
+                    cell.number_format = "0.00"
+            worksheet.row_dimensions[first + offset].height = 24 if offset == 0 else 21
+
     worksheet.row_dimensions[1].height = 24
     benchmark_labels = [label for label, _value in display_rows]
     max_label = max(
         *(len(summary_display_label(str(row[0]))) for row in rows if row),
         *(len(label) for label in benchmark_labels),
-        len("time轮Benchmark"),
+        len("Benchmark"),
     )
     worksheet.column_dimensions["A"].width = max(23, min(36, max_label + 2))
     stage_widths = {
@@ -713,7 +745,11 @@ def hotspot_path(run_root: Path) -> Path:
 
 
 def write_hotspot(worksheet: Worksheet, run_root: Path) -> None:
-    lines = hotspot_path(run_root).read_text(errors="replace").splitlines()
+    profile_path = run_root / "collection_profile"
+    if profile_path.is_file() and profile_path.read_text().strip() == "end_to_end":
+        lines = ["未采集（仅端到端模式）"]
+    else:
+        lines = hotspot_path(run_root).read_text(errors="replace").splitlines()
     header = worksheet.cell(1, 1, "perf report 容器内符号解析输出")
     header.font = Font(name="Carlito", size=11, bold=True, color=WHITE)
     header.fill = PatternFill("solid", fgColor=HEADER_FILL)
@@ -756,12 +792,15 @@ def output_path(args: argparse.Namespace) -> Path:
 def expected_sheet_names(
     groups: tuple[GroupSpec, ...],
     include_end_to_end: bool = False,
+    include_zen1: bool = False,
 ) -> list[str]:
     names = ["汇总", "热点函数"]
     for group in groups:
         names.extend(f"{stem} {group.suffix}" for stem, _ in STAGE_SHEETS)
         if include_end_to_end:
             names.append(f"{END_TO_END_SHEET} {group.suffix}")
+    if include_zen1:
+        names.append("Zen1诊断（待验证）")
     return names
 
 
@@ -769,10 +808,11 @@ def validate_saved_workbook(
     path: Path,
     groups: tuple[GroupSpec, ...],
     include_end_to_end: bool = False,
+    include_zen1: bool = False,
 ) -> None:
     workbook = load_workbook(path, read_only=False, data_only=False)
     try:
-        expected = expected_sheet_names(groups, include_end_to_end)
+        expected = expected_sheet_names(groups, include_end_to_end, include_zen1)
         if workbook.sheetnames != expected:
             raise ValueError(f"unexpected worksheet order in {path}")
         for worksheet in workbook.worksheets:
@@ -784,10 +824,88 @@ def validate_saved_workbook(
             workbook["汇总"].cell(row, 1).value
             for row in range(1, workbook["汇总"].max_row + 1)
         }
-        if "time轮Benchmark" not in summary_labels:
-            raise ValueError(f"{path}: time benchmark section is missing")
+        if "Benchmark" not in summary_labels:
+            raise ValueError(f"{path}: benchmark section is missing")
     finally:
         workbook.close()
+
+
+def write_zen1_diagnostics(worksheet: Worksheet, path: Path) -> None:
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.reader(handle))
+    for row_index, row in enumerate(rows, 1):
+        for column, raw in enumerate(row, 1):
+            value, number_format = summary_value(raw)
+            cell = worksheet.cell(row_index, column, value)
+            if row_index == 1:
+                style_detail_header(cell)
+            else:
+                style_summary_row(cell, row[0], column)
+            cell.number_format = number_format
+            cell.alignment = Alignment(
+                horizontal="left" if column in (1, len(row)) else "center",
+                vertical="center",
+                wrap_text=True,
+            )
+        worksheet.row_dimensions[row_index].height = 48 if row_index == 1 else 42
+    worksheet.column_dimensions["A"].width = 30
+    for column in range(2, len(rows[0])):
+        worksheet.column_dimensions[get_column_letter(column)].width = 24
+    worksheet.column_dimensions[get_column_letter(len(rows[0]))].width = 60
+    worksheet.freeze_panes = "B2"
+    worksheet.sheet_view.showGridLines = False
+
+
+HOTSPOT_ROW = re.compile(r"^\s*([\d.]+)%\s+(\S+)\s+(\S+)\s+(.+?)\s*$")
+
+
+def export_details(root: Path) -> None:
+    target = root / "details"
+    target.mkdir(exist_ok=True)
+    entries = []
+    for source in sorted(root.rglob("*.csv")):
+        relative = source.relative_to(root)
+        if relative.parts[0] in {"details", "spe", "evidence"}:
+            continue
+        destination = target / "topdown" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        entries.append(
+            {
+                "source": str(relative),
+                "csv": str(destination.relative_to(root)),
+                "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+            }
+        )
+    (target / "index.json").write_text(
+        json.dumps(entries, ensure_ascii=False, indent=2) + "\n"
+    )
+
+
+def write_compact_hotspot(worksheet: Worksheet, source: Path, root: Path) -> None:
+    rows = []
+    for line in source.read_text(errors="replace").splitlines():
+        match = HOTSPOT_ROW.match(line)
+        if match:
+            share, command, library, symbol = match.groups()
+            rows.append((float(share) / 100, command, library, symbol))
+    if not rows:
+        raise ValueError(f"No hotspot records in {source}")
+    headers = ("采样占比", "线程", "代码库", "函数")
+    destination = root / "details/hotspot.csv"
+    destination.parent.mkdir(exist_ok=True)
+    with destination.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(headers)
+        writer.writerows(rows)
+    worksheet.append(headers)
+    for row in rows:
+        worksheet.append(row)
+    for cell in worksheet["A"][1:]:
+        cell.number_format = "0.00%"
+    for column, width in zip("ABCD", (16, 24, 40, 90), strict=True):
+        worksheet.column_dimensions[column].width = width
+    worksheet.auto_filter.ref = worksheet.dimensions
 
 
 def build_workbook(args: argparse.Namespace, groups: tuple[GroupSpec, ...]) -> Path:
@@ -799,7 +917,43 @@ def build_workbook(args: argparse.Namespace, groups: tuple[GroupSpec, ...]) -> P
     write_summary(summary, args.run_root)
     write_hotspot(hotspot, args.run_root)
 
-    for group in groups:
+    compact = getattr(args, "compact_report", False)
+    if compact:
+        export_details(args.run_root)
+        summary.title = "Topdown"
+        workbook.remove(hotspot)
+        hotspot = workbook.create_sheet("Hotspot")
+        if (args.run_root / "collection_profile").read_text().strip() == "full":
+            write_compact_hotspot(hotspot, hotspot_path(args.run_root), args.run_root)
+        else:
+            hotspot.append(["未采集（仅端到端模式）"])
+        for row in hotspot:
+            for cell in row:
+                if cell.row == 1:
+                    reference = summary.cell(1, 2)
+                else:
+                    reference = summary.cell(4, 2)
+                    if cell.column == 1:
+                        cell.number_format = "0.00%"
+                cell.font = copy(reference.font)
+                cell.fill = copy(reference.fill)
+                cell.border = copy(reference.border)
+                cell.alignment = Alignment(
+                    horizontal=(
+                        "center"
+                        if cell.row == 1
+                        else "right"
+                        if cell.column == 1
+                        else "left"
+                    ),
+                    vertical="center",
+                    indent=1,
+                )
+        hotspot.freeze_panes = "B2"
+        hotspot.sheet_view.showGridLines = False
+        hotspot.row_dimensions[1].height = 24
+
+    for group in () if compact else groups:
         last_column = len(BASE_HEADERS) + len(group.events) + len(group.derived)
         for stem, stages in STAGE_SHEETS:
             worksheet = workbook.create_sheet(f"{stem} {group.suffix}")
@@ -824,6 +978,10 @@ def build_workbook(args: argparse.Namespace, groups: tuple[GroupSpec, ...]) -> P
             )
             size_detail_sheet(worksheet, last_column)
 
+    diagnostics = args.run_root / "zen1_diagnostics.csv"
+    include_zen1 = diagnostics.is_file()
+    if include_zen1 and not compact:
+        write_zen1_diagnostics(workbook.create_sheet("Zen1诊断（待验证）"), diagnostics)
     workbook.active = 0
     workbook.calculation.calcMode = "auto"
     workbook.calculation.fullCalcOnLoad = True
@@ -831,7 +989,31 @@ def build_workbook(args: argparse.Namespace, groups: tuple[GroupSpec, ...]) -> P
     output = output_path(args)
     workbook.save(output)
     workbook.close()
-    validate_saved_workbook(output, groups, include_end_to_end)
+    if not compact:
+        validate_saved_workbook(output, groups, include_end_to_end, include_zen1)
+    else:
+        with ZipFile(output) as archive:
+            if archive.testzip() is not None:
+                raise ValueError("Invalid compact workbook archive")
+    spe_dir = getattr(args, "spe_dir", None) or args.run_root / "spe" / "analysis"
+    if getattr(args, "spe_dir", None) is not None or spe_dir.exists():
+        report = (
+            getattr(args, "spe_report", None)
+            or Path(__file__).parent / "spe" / "report.py"
+        )
+        if not report.is_file():
+            raise FileNotFoundError(f"SPE report helper is missing: {report}")
+        subprocess.run(
+            [
+                sys.executable,
+                str(report),
+                "--workbook",
+                str(output),
+                "--spe-dir",
+                str(spe_dir),
+            ],
+            check=True,
+        )
     return output
 
 

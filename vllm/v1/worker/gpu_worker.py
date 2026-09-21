@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 
 import vllm.envs as envs
+from kperf_instrument import configure as configure_kperf
 from kperf_instrument import kperf_span_begin, kperf_span_finish
 from vllm.config import CUDAGraphMode, VllmConfig, set_current_vllm_config
 from vllm.config.compilation import CompilationMode
@@ -1076,6 +1077,11 @@ class Worker(WorkerBase):
                 ]
             )
         return self.profiler.annotate_context_manager(annotation)
+
+    def configure_kperf(self, **kwargs: str) -> dict[str, object]:
+        """Called by collective_rpc after pause(mode=wait) has drained requests."""
+        torch.cuda.synchronize(self.device)
+        return configure_kperf(**kwargs)
 
     @torch.inference_mode()
     @with_gpu_sync_check

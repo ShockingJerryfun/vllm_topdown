@@ -488,6 +488,10 @@ def _probe_numactl_args(numactl_args: str) -> bool:
 
 def _resolve_numactl_args(numactl_args: str) -> str:
     """Drop ``--membind`` if the container rejects it, keeping CPU binding."""
+    if os.environ.get("KPERF_STRICT_NUMA") == "1":
+        if not _probe_numactl_args(numactl_args):
+            raise RuntimeError(f"Required NUMA binding rejected: {numactl_args}")
+        return numactl_args
     cpu_only = " ".join(
         t for t in numactl_args.split() if not t.startswith("--membind=")
     )

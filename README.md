@@ -36,7 +36,7 @@
 中调用 `kperf_finish(stage)`，因此正常返回和异常退出都会尝试关闭区间。探针用
 模块级 `ACTIVE` 状态保存当前区间，不是线程局部栈；本方案依赖八段在同一执行
 链中串行且不嵌套，不支持把它当作可嵌套或多线程并发的通用Profiler。
-端到端区间通过显式 `KPERF_TARGET` 在独立服务轮次中采集；该轮的八阶段
+端到端区间通过显式 `KPERF_TARGET` 在独立请求轮次中采集；该轮的八阶段
 `begin/finish` 不会重置或提前关闭端到端计数器。
 
 ### Core PMU计数
@@ -46,7 +46,8 @@ PMU轮次不调用 `perf stat`。`kperf_instrument.py` 通过
 `disabled+pinned` 的group leader，其余事件通过 `group_fd` 加入同组；读取格式
 同时请求group值、`time_enabled`、`time_running` 和事件ID。
 
-Core PMU在模块初始化时使用 `pid=0, cpu=-1` 打开，绑定到**当时调用
+常驻模式通过Worker RPC在请求之间打开Core PMU；单独运行 `run_one.sh` 时仍在
+模块初始化时打开。两者均使用 `pid=0, cpu=-1`，绑定到**当时调用
 `perf_event_open` 的线程**，并可随该线程迁移CPU；代码没有设置 `inherit`，
 因此不会自动统计子线程或子进程。属性只排除Hypervisor，未排除用户态或内核态。
 每次 `kperf_begin` 对leader执行整组 `RESET`、`ENABLE`，每次
@@ -69,19 +70,40 @@ time轮次不打开PMU。每段同时读取：
 - `time.perf_counter_ns()`：单调墙钟时间；
 - `time.thread_time_ns()`：执行该打点代码的当前线程CPU时间。
 
-模块初始化时做257次空读，分别取墙钟和线程CPU时间开销的低中位数；每条记录
+每次初始化time轮次时做257次空读，分别取墙钟和线程CPU时间开销的低中位数；每条记录
 从原始差值中扣除对应开销，并把负值截为0。`CPU利用率` 最终按所有有效Decode
 行的 `SUM(thread CPU time) / SUM(wall time)` 计算，不做0%到100%的裁剪。
 
-time和PMU是两类独立采集轮次。芯片脚本先运行一次time，再为每个事件组分别
-重启服务、重新发送相同参数的请求；所以表中的时间和cycles不是同一次函数调用的
+time和PMU是两类独立采集轮次。芯片脚本只启动一次服务，先运行time，再在请求
+之间切换事件组，并重新发送相同参数的请求；所以表中的时间和cycles不是同一次函数调用的
 原子配对值。明细表只是按各阶段在独立轮次中的序号展示时间，汇总中的
 `频率(MHz)=平均cycles/平均time(us)` 也只能视为跨轮次估算。
+
+### 常驻服务与事件切换
+
+`session.sh` 负责一次启动和最终退出，`switch_pmu.py` 复用vLLM现有接口：
+`pause(mode=wait, clear_cache=false)` 等待请求及执行队列排空，随后
+`collective_rpc("configure_kperf")` 在模型执行线程同步GPU并关闭旧组、打开新组，
+收到确认后才 `resume` 并发送下一轮请求。这些操作均在被测区间之外；新组保持
+disabled，仍由原来的 `kperf_begin/finish` 控制每段计数。
+
+每轮重置调用编号、目标阶段和Decode资格标记，并保存PID、TID和事件ID。
+跨轮PID/TID变化或切换失败会退出采集，不会继续发送下一轮请求。
+常驻模式用相邻读取的差值记录每段 `time_enabled/time_running`，因为内核的
+`RESET` 只清零事件计数，不清零这两个累计调度时间。
+该行为见 [Linux perf_event_open说明](https://man7.org/linux/man-pages/man2/perf_event_open.2.html)。
+
+运行参数仍来自 `config.env`，入口命令不变。控制接口仅由采集服务通过
+`KPERF_CONTROL=1` 和 `VLLM_SERVER_DEV_MODE=1` 开启，要求监听
+`127.0.0.1`；当前汇总仍面向单模型执行Worker。常驻服务保留模型、Graph及
+缓存/分配器状态，不等同于逐轮重启的冷暖状态；采样边界不变不代表两种方式的
+数值必须相同。默认 `READY_CHECK_TIMEOUT_SEC=0`、`NUM_WARMUPS=0` 时，每轮
+只发送 `NUM_PROMPTS=1` 个正式请求，不额外发送benchmark探测或预热请求。
 
 ### Decode对齐与质量门槛
 
 探针把记录以 `KPERF_TIME,...` 或 `KPERF,...` 行写入服务标准输出。
-`run_one.sh` 只截取服务健康检查完成之后、benchmark结束之前的日志作为
+`run_one.sh` 将本轮切换开始到请求排空、停计数确认后的日志截取为
 `measurement.log`。`parse_run.py` 先保留各阶段全部raw记录，再按全局调用号排序，
 以 `run_fullgraph` 为锚点寻找严格连续的八段窗口：阶段顺序必须与上表一致，八个
 全局调用号也必须连续。只有这些窗口进入 `parsed/` 和汇总；Prefill与非对齐调用
@@ -99,9 +121,9 @@ FullGraph Decode区间，只有后者进入汇总。端到端与八阶段不是�
 
 ### hotspot与PMU打点的区别
 
-`hotspot` 是另一轮独立运行，此时 `KPERF_ENABLE=0`。脚本只在服务就绪后精确
-匹配第一个 `VLLM::Worker_TP`，并执行
-`PYTHONPERFSUPPORT=1 perf record -e cycles:u -c 100000 -p <Worker PID>`，
+`hotspot` 是另一轮独立请求，此时区间打点已禁用。常驻采集使用Worker RPC
+确认的实际执行线程TID，执行
+`PYTHONPERFSUPPORT=1 perf record -e cycles:u -c 100000 -t <执行线程TID>`，
 生成 `perf.data` 和 `perf report`。它是按用户态cycles事件周期进行的
 平坦符号热点采样；不是八段区间的精确事件计数，也不参与Topdown公式。
 

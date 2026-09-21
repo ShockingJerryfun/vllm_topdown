@@ -6,11 +6,14 @@ from __future__ import annotations
 import ctypes
 import errno
 import fcntl
+import hashlib
+import json
 import os
 import platform
 import statistics
 import struct
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -71,9 +74,14 @@ MODE = os.getenv("KPERF_MODE", "pmu")
 SCOPE = os.getenv("KPERF_SCOPE", "thread")
 PMU_NAME = os.getenv("KPERF_PMU_NAME", "")
 ENABLED = os.getenv("KPERF_ENABLE") == "1"
+CONTROL_ENABLED = os.getenv("KPERF_CONTROL") == "1"
+OWNER_TID = 0
 TARGET_STAGE = os.getenv("KPERF_TARGET", "")
 QUALIFIER_STAGE = os.getenv("KPERF_QUALIFIER", "")
+STRICT_THREAD = os.getenv("KPERF_STRICT_NUMA") == "1"
+STRICT_OWNER_TID = threading.get_native_id()
 COUNTER_GROUPS: list[tuple[list[int], list[int]]] = []
+GROUP_TIMES: dict[int, tuple[int, int]] = {}
 WALL_START_NS = 0
 THREAD_START_NS = 0
 WALL_OVERHEAD_NS = 0
@@ -82,6 +90,7 @@ CALL = 0
 NAME = ""
 ACTIVE = False
 QUALIFIED = False
+RUNTIME_RECORDED = False
 
 
 def emit(message: str) -> None:
@@ -164,6 +173,65 @@ def close_groups() -> None:
         for fd in fds:
             os.close(fd)
     COUNTER_GROUPS.clear()
+    GROUP_TIMES.clear()
+
+
+def configure(
+    mode: str,
+    codes: str = "",
+    names: str = "",
+    scope: str = "thread",
+    pmu_name: str = "",
+    target: str = "",
+    qualifier: str = "",
+    round_id: str = "",
+) -> dict[str, object]:
+    """Switch an idle collector on the model execution thread, before a request."""
+    global MODE, EVENTS, NAMES, SCOPE, PMU_NAME, ENABLED, OWNER_TID
+    global TARGET_STAGE, QUALIFIER_STAGE, CALL, NAME, QUALIFIED
+    if not CONTROL_ENABLED:
+        raise RuntimeError("Runtime switching requires KPERF_CONTROL=1")
+    check_owner("switch")
+    tid = threading.get_native_id()
+    if ACTIVE or (OWNER_TID and tid != OWNER_TID):
+        raise RuntimeError("Switch requires an idle collector on its owner thread")
+    if mode not in ("disabled", "time", "pmu"):
+        raise ValueError(f"Unsupported collection mode: {mode}")
+    events = [int(code.strip(), 0) for code in codes.split(",") if code.strip()]
+    event_names = [name.strip() for name in names.split(",") if name.strip()]
+    if mode == "pmu" and (not events or len(events) != len(event_names)):
+        raise ValueError("PMU mode requires matching events and names")
+    if scope not in ("thread", "uncore"):
+        raise ValueError(f"Unsupported PMU scope: {scope}")
+    if scope == "uncore" and not pmu_name:
+        raise ValueError("Uncore mode requires a PMU name")
+
+    ENABLED = False
+    for fds, _ in COUNTER_GROUPS:
+        fcntl.ioctl(fds[0], PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP)
+    close_groups()
+    OWNER_TID = tid
+    MODE, EVENTS, NAMES = mode, events, event_names
+    SCOPE, PMU_NAME = scope, pmu_name
+    TARGET_STAGE, QUALIFIER_STAGE = target, qualifier
+    CALL, NAME, QUALIFIED = 0, "", False
+    if mode == "pmu":
+        init_pmu()
+        if not COUNTER_GROUPS:
+            raise RuntimeError("Failed to open the requested PMU group")
+    elif mode == "time":
+        init_time()
+    ENABLED = mode != "disabled"
+    emit(f"[kperf] round={round_id} mode={mode} pid={os.getpid()} tid={tid}")
+    return {
+        "round_id": round_id,
+        "pid": os.getpid(),
+        "tid": tid,
+        "mode": mode,
+        "events": EVENTS,
+        "names": NAMES,
+        "event_ids": [ids for _, ids in COUNTER_GROUPS],
+    }
 
 
 def parse_cpu_list(value: str) -> list[int]:
@@ -261,14 +329,73 @@ def init() -> None:
         emit(f"[kperf] init failed: unsupported mode={MODE}")
 
 
+def check_owner(boundary: str) -> None:
+    if not STRICT_THREAD:
+        return
+    tid = threading.get_native_id()
+    if tid != STRICT_OWNER_TID:
+        raise RuntimeError(f"{boundary}: probe TID {tid} != owner {STRICT_OWNER_TID}")
+
+
+def record_runtime_identity() -> None:
+    """Record imports inside the actual probed process, before any timed span."""
+    global RUNTIME_RECORDED
+    if RUNTIME_RECORDED:
+        return
+    directory = os.getenv("KPERF_RUNTIME_IDENTITY_DIR")
+    if not directory:
+        return
+    modules = {}
+    for name, module in sorted(list(sys.modules.items())):
+        if not (
+            name == "kperf_instrument"
+            or name == "spe_marker"
+            or name == "torch"
+            or name == "vllm"
+            or name.startswith("vllm.")
+        ):
+            continue
+        filename = getattr(module, "__file__", None)
+        if not filename:
+            continue
+        path = Path(filename).resolve(strict=True)
+        modules[name] = {
+            "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+    value = {
+        "pid": pid,
+        "tid": threading.get_native_id(),
+        "python": sys.executable,
+        "version": sys.version,
+        "sys_path": sys.path,
+        "modules": modules,
+        "stat": Path("/proc/self/stat").read_text(),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)),
+        "captured_ns": time.time_ns(),
+    }
+    path = root / f"{pid}.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
+    RUNTIME_RECORDED = True
+
+
 def kperf_begin(name: str) -> None:
     global ACTIVE, CALL, NAME, QUALIFIED, THREAD_START_NS, WALL_START_NS
+    record_runtime_identity()
     if not ENABLED:
         return
     if TARGET_STAGE and name != TARGET_STAGE:
         if ACTIVE and name == QUALIFIER_STAGE:
             QUALIFIED = True
         return
+    if CONTROL_ENABLED and threading.get_native_id() != OWNER_TID:
+        raise RuntimeError("Probe executed outside the PMU owner thread")
+    check_owner("begin")
     QUALIFIED = False
     if MODE == "time":
         CALL += 1
@@ -323,6 +450,7 @@ def kperf_finish(name: str) -> None:
         return
     if not ACTIVE:
         return
+    check_owner("end")
     if MODE == "time":
         wall_end_ns = time.perf_counter_ns()
         thread_end_ns = time.thread_time_ns()
@@ -369,6 +497,11 @@ def kperf_finish(name: str) -> None:
         valid = 1
         for fds, ids in COUNTER_GROUPS:
             group_enabled, group_running, group_counts = read_group(fds, ids)
+            if CONTROL_ENABLED:
+                previous = GROUP_TIMES.get(fds[0], (0, 0))
+                GROUP_TIMES[fds[0]] = (group_enabled, group_running)
+                group_enabled -= previous[0]
+                group_running -= previous[1]
             time_enabled += group_enabled
             time_running += group_running
             valid &= int(group_running > 0 and group_running == group_enabled)
@@ -406,4 +539,9 @@ def kperf_span_finish(name: str) -> None:
         kperf_finish(name)
 
 
+if STRICT_THREAD and ENABLED:
+    emit(
+        f"[kperf] owner_pid={os.getpid()} owner_tid={STRICT_OWNER_TID} "
+        "begin_end_owner_checks=required"
+    )
 init()

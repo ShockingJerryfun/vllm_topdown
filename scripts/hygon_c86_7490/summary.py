@@ -30,14 +30,31 @@ GROUPS = (
     "icache",
     "dcache",
     "tlb",
+    "branch_detail",
+    "frontend_detail",
+    "backend_detail",
+    "memory_detail",
     "l3",
 )
 CYCLES_SHARE_METRIC = "cycle占比"
 UNSUPPORTED = "未支持"
 INVALID = "无效"
 PROXY_SUM_LIMIT = 1.05
+ZEN1_GROUPS = ("branch_detail", "frontend_detail", "backend_detail", "memory_detail")
+DIAGNOSTIC_NOTES = {
+    "Return missrate": "近返回分支预测错误 / 退休近返回分支",
+    "IC DQ empty": "DQ空导致IC管线停顿；不等同Fetch Latency Bound",
+    "IC backpressure": "IC管线背压停顿；不等同Fetch Bandwidth Bound",
+    "ALU token stall": "ALU token不足导致分派停顿；各资源项不可直接相加",
+    "ALSQ token stall": "ALSQ token不足导致分派停顿；各资源项不可直接相加",
+    "Retire token stall": "退休token不足导致分派停顿；各资源项不可直接相加",
+    "DIV busy": "除法器忙周期；不等同DIV Stall",
+    "L2 fill pending": "L2填充请求在途周期；不等同L2 Bound或Memory Bound",
+    "iTLB MPKI（候选）": "历史84/85事件不响应；零计数不能证明无iTLB miss",
+}
 MetricValue = float | str | None
 PERCENT_METRICS = {
+    *(name for name in DIAGNOSTIC_NOTES if name != "iTLB MPKI（候选）"),
     "CPU利用率",
     CYCLES_SHARE_METRIC,
     "Retire",
@@ -97,6 +114,9 @@ def parse_args() -> argparse.Namespace:
 
 def read_rows(root: Path, group: str, stage: str) -> list[dict[str, str]]:
     path = root / group / "parsed" / f"{stage}.csv"
+    # Old captures have no Zen1 detail groups; absent data must not become zero.
+    if group in ZEN1_GROUPS and not (root / group).exists():
+        return []
     with path.open(newline="", encoding="utf-8") as handle:
         return [row for row in csv.DictReader(handle) if row["valid"] == "1"]
 
@@ -183,7 +203,8 @@ def spec_metrics(
         ("store_ops", "load_store_ops"),
         ("dispatched_uops",),
     )
-    branch_spec = aggregate_ratio(spec_ls, ("branches",), ("dispatched_uops",))
+    # Keep the existing dp_spec proxy unchanged; branch_spec is computed separately.
+    branch_uop_proxy = aggregate_ratio(spec_ls, ("branches",), ("dispatched_uops",))
     ase_spec = aggregate_ratio(
         spec_ase,
         ("fpu_spec_uops",),
@@ -193,10 +214,9 @@ def spec_metrics(
         "dp_spec": None,
         "ld_spec": ld_spec,
         "st_spec": st_spec,
-        "branch_spec": branch_spec,
         "ase_spec": ase_spec,
     }
-    parts = (ld_spec, st_spec, branch_spec, ase_spec)
+    parts = (ld_spec, st_spec, branch_uop_proxy, ase_spec)
     if all(value is not None for value in parts):
         proxy_sum = sum(value for value in parts if value is not None)
         if proxy_sum > PROXY_SUM_LIMIT:
@@ -209,6 +229,7 @@ def stage_metrics(root: Path, stage: str) -> dict[str, MetricValue]:
     timing = read_rows(root, "time", stage)
     topdown = read_rows(root, "topdown", stage)
     branch = read_rows(root, "branch", stage)
+    branch_detail = read_rows(root, "branch_detail", stage)
     spec_ls = read_rows(root, "spec_ls", stage)
     spec_ase = read_rows(root, "spec_ase", stage)
     icache = read_rows(root, "icache", stage)
@@ -243,9 +264,13 @@ def stage_metrics(root: Path, stage: str) -> dict[str, MetricValue]:
         "Fetch Bandwidth Bound": None,
         "BadSpec": topdown_values["BadSpec"],
         "Branch Mispredicts": None,
-        "Indirect Branch": None,
+        "Indirect Branch": aggregate_ratio(
+            branch_detail, ("indirect_branch_misses",), ("branch_misses",)
+        ),
         "Push Branch": None,
-        "Pop Branch": None,
+        "Pop Branch": aggregate_ratio(
+            branch_detail, ("return_misses",), ("branch_misses",)
+        ),
         "Other Branch": None,
         "Machine Clears": None,
         "Nuke Flush": None,
@@ -266,7 +291,7 @@ def stage_metrics(root: Path, stage: str) -> dict[str, MetricValue]:
         "dp_spec": spec_values["dp_spec"],
         "ld_spec": spec_values["ld_spec"],
         "st_spec": spec_values["st_spec"],
-        "branch_spec": spec_values["branch_spec"],
+        "branch_spec": aggregate_ratio(branch, ("branches",), ("instructions",)),
         "ase_spec": spec_values["ase_spec"],
         "br missrate": aggregate_ratio(branch, ("branch_misses",), ("branches",)),
         "br mpki": aggregate_ratio(
@@ -354,6 +379,47 @@ def stage_metrics(root: Path, stage: str) -> dict[str, MetricValue]:
     }
 
 
+def diagnostic_metrics(root: Path, stage: str) -> dict[str, float | None]:
+    branch = read_rows(root, "branch_detail", stage)
+    frontend = read_rows(root, "frontend_detail", stage)
+    backend = read_rows(root, "backend_detail", stage)
+    memory = read_rows(root, "memory_detail", stage)
+    return {
+        "Return missrate": aggregate_ratio(branch, ("return_misses",), ("returns",)),
+        "IC DQ empty": aggregate_ratio(frontend, ("ic_dq_empty",), ("cycles",)),
+        "IC backpressure": aggregate_ratio(frontend, ("ic_backpressure",), ("cycles",)),
+        "ALU token stall": aggregate_ratio(backend, ("alu_token_stall",), ("cycles",)),
+        "ALSQ token stall": aggregate_ratio(
+            backend, ("alsq_token_stall",), ("cycles",)
+        ),
+        "Retire token stall": aggregate_ratio(
+            backend, ("retire_token_stall",), ("cycles",)
+        ),
+        "DIV busy": aggregate_ratio(backend, ("div_busy",), ("cycles",)),
+        "L2 fill pending": aggregate_ratio(memory, ("l2_fill_pending",), ("cycles",)),
+        "iTLB MPKI（候选）": aggregate_ratio(
+            memory, ("itlb_l2_hit", "itlb_l2_miss"), ("instructions",), 1000
+        ),
+    }
+
+
+def write_diagnostics(root: Path) -> None:
+    values = {stage: diagnostic_metrics(root, stage) for stage in STAGES}
+    with (root / "zen1_diagnostics.csv").open(
+        "w", newline="", encoding="utf-8-sig"
+    ) as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["指标（Zen1候选，7490未验证）", *STAGES, "口径"])
+        for metric, note in DIAGNOSTIC_NOTES.items():
+            writer.writerow(
+                [
+                    metric,
+                    *(format_value(metric, values[stage][metric]) for stage in STAGES),
+                    note,
+                ]
+            )
+
+
 def format_value(metric: str, value: MetricValue) -> str:
     if value is None:
         return "未采集"
@@ -380,6 +446,8 @@ def write_quality(root: Path) -> None:
         writer = csv.writer(handle)
         writer.writerow(["group", *fields])
         for group in GROUPS:
+            if group in ZEN1_GROUPS and not (root / group).exists():
+                continue
             with (root / group / "collection_quality.csv").open(
                 newline="", encoding="utf-8-sig"
             ) as source:
@@ -424,6 +492,7 @@ def main() -> int:
                 )
         writer.writerow([""])
         writer.writerow(["热点函数占比：", *("见热点函数" for _ in STAGES)])
+    write_diagnostics(args.run_root)
     write_quality(args.run_root)
     LOGGER.info("wrote %s", args.run_root / "summary.csv")
     return 0
