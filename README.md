@@ -2,6 +2,15 @@
 
 # 本分支：vLLM 0.26.0 默认V2 Decode八阶段与端到端PMU打点
 
+新常驻采集脚本维护在 **`topdown-persistent`** 分支。
+使用方法及配置说明见 [scripts/README.md](scripts/README.md)。
+
+```bash
+git clone --branch topdown-persistent --single-branch \
+  https://github.com/ShockingJerryfun/vllm_topdown.git vllm_topdown_persistent
+cd vllm_topdown_persistent
+```
+
 当前基线为Qwen3-8B、Python 3.13、PyTorch 2.11.0。分支按真实decode串行路径
 采集下面八个CPU PMU区间：
 

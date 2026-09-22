@@ -1,5 +1,22 @@
 # Topdown 与 SPE 采集
 
+本说明对应 GitHub 仓库 `ShockingJerryfun/vllm_topdown` 的
+**`topdown-persistent`** 分支。首次获取请使用新的目录：
+
+```bash
+git clone --branch topdown-persistent --single-branch \
+  https://github.com/ShockingJerryfun/vllm_topdown.git vllm_topdown_persistent
+cd vllm_topdown_persistent
+```
+
+准备好目标机器的配置后，从仓库根目录调用：
+
+```bash
+bash scripts/run_topdown.sh /absolute/path/config.env /absolute/path/new_result
+```
+
+配置与结果路径按实际机器填写，结果目录须为新目录；下文的 84 路径仅为示例。
+
 统一入口 `scripts/run_topdown.sh [配置绝对路径 [结果目录]]` 完成函数阶段、端到端 time/PMU、hotspot 和 SPE，生成同一份 Excel。对明确设置 Worker 绑核的 920b/950 配置，`SPE_ENABLE=auto` 自动启用 SPE；显式 `SPE_ENABLE=0` 可关闭。其他芯片或未配置绑核时保留原 Topdown 流程，海光不运行 Arm SPE。
 
 启用 SPE 时需在配置中提供 `HOST_PYTHON`、`SUBREAPER_BIN`、`EXPERIMENT_LOCK`、`SPE_BINARY_CACHE` 及 Worker/服务/客户端绑定。主入口复用现有监督器，在完整 Topdown 后独立采集 3 次正式请求的 SPE，使用原生快速解析；选中样本回放核对通过后删除该次临时全量 perf 数据，只保留筛选结果、必要二进制及校验证据。不会删除历史数据。Excel 输出 Topdown、Hotspot、SPE 三页，完整明细导出 CSV；Topdown 汇总样式保持。
