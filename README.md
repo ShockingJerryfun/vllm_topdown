@@ -2,7 +2,7 @@
 
 # 本分支：vLLM 0.26.0 默认V2 Decode八阶段与端到端PMU打点
 
-新常驻采集脚本维护在 **`topdown-persistent`** 分支。
+常驻采集脚本维护在 **`topdown-persistent`** 分支。
 使用方法及配置说明见 [scripts/README.md](scripts/README.md)。
 
 ```bash
