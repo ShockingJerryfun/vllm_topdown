@@ -28,16 +28,21 @@ def parse_report(text, cpus, node):
         fields = [v.strip() for v in line.split("|")[1:-1]]
         if len(fields) < 3 or not fields[0].isdigit():
             continue
-        if section == "numa":
-            numa[int(fields[0])] = float(fields[2])
-        elif section == "cores" and len(fields) == 4:
-            cores[int(fields[0])] = float(fields[3])
-    selected = {cpu: cores[cpu] for cpu in cpus}
+        try:
+            if section == "numa":
+                numa[int(fields[0])] = float(fields[2])
+            elif section == "cores" and len(fields) == 4:
+                cores[int(fields[0])] = float(fields[3])
+        except ValueError:
+            continue
+    selected = {cpu: cores[cpu] for cpu in cpus if cpu in cores}
+    if not selected:
+        raise ValueError("DevKit did not report any selected Worker core frequency")
     return {
         "worker_cpus": cpus,
         "numa_node": node,
         "core_mhz": sum(selected.values()) / len(selected),
-        "uncore_mhz": numa[node],
+        "uncore_mhz": numa.get(node),
         "per_core_mhz": selected,
     }
 

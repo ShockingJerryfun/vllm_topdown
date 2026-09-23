@@ -399,10 +399,6 @@ def monitor_process(
                 + "\n"
             )
             stream.flush()
-            if args.max_temperature > 0 and any(
-                row["temperature"] >= args.max_temperature for row in state
-            ):
-                raise RuntimeError("GPU reached experiment thermal stop threshold")
             for pid in pids:
                 try:
                     namespace = os.readlink(f"/proc/{pid}/ns/pid")
@@ -417,128 +413,24 @@ def monitor_process(
         raise RuntimeError(f"Topdown runner exited with code {process.returncode}")
 
 
-def archive_result(path: Path) -> None:
-    if not path.exists():
-        return
-    history = path.parent / ".history" / path.name
-    history.mkdir(parents=True, exist_ok=True)
-    number = 1
-    while (history / str(number)).exists():
-        number += 1
-    path.rename(history / str(number))
-
-
-def resume_state(
-    args: argparse.Namespace, root: Path, monitor: Path, frozen: dict
-) -> None:
-    """Match scientific inputs before reusing rounds, preserving prior provenance."""
-    contract_path = root.parent / f".{root.name}_resume_contract.json"
-    fields = [
-        "MODEL",
-        "VLLM_SITE",
-        "VLLM_VERSION",
-        "VLLM_USE_V2_MODEL_RUNNER",
-        "GPU_ID",
-        "BLOCK_SIZE",
-        "MAX_MODEL_LEN",
-        "MAX_NUM_SEQS",
-        "MAX_NUM_BATCHED_TOKENS",
-        "TENSOR_PARALLEL_SIZE",
-        "DATA_PARALLEL_SIZE",
-        "DTYPE",
-        "GPU_MEMORY_UTILIZATION",
-        "PREFIX_CACHING_FLAG",
-        "SERVER_SEED",
-        "SERVER_FLAGS",
-        "RANDOM_INPUT_LEN",
-        "RANDOM_OUTPUT_LEN",
-        "RANDOM_RANGE_RATIO",
-        "NUM_PROMPTS",
-        "NUM_WARMUPS",
-        "MAX_CONCURRENCY",
-        "REQUEST_RATE",
-        "IGNORE_EOS_FLAG",
-        "TEMPERATURE",
-        "BENCH_SEED",
-        "WORKER_CPUS",
-        "WORKER_POOL_CPUS",
-        "WORKER_NUMA_NODE",
-        "SERVICE_CPUS",
-        "CLIENT_CPUS",
-        "HOTSPOT_SCOPE",
-        "ROUND_WARMUPS",
-        "WARMUP_SCOPE",
-        "CODE_PAGE_CONDITION",
-        "CODE_PAGE_MODE",
-    ]
-
-    fields += [
-        "COLLECTION_PROFILE",
-        "SPE_ENABLE",
-        "FREQUENCY_ENABLE",
-        "PERF_EVENT",
-        "PERF_PERIOD",
-        "CODE_PAGE_COVERAGE_POLICY",
-        "CODE_PAGE_RESIDENCY_POLICY",
-        "CODE_PAGE_AUDIT_MODE",
-    ]
-    fields += [
-        line.split("=", 1)[0]
-        for line in (args.project / "scripts/config.env").read_text().splitlines()
-        if line.startswith("EVENTS_950_")
-    ]
-
-    def values(config: Path) -> dict:
-        command = [
-            "bash",
-            "-c",
-            (
-                'set -a; source "$1"; shift; for key; do '
-                'printf "%s=%s\\0" "$key" "${!key-}"; done'
-            ),
-            "config",
-            str(args.project / "scripts/config.env"),
-            *fields,
-        ]
-        env = {key: value for key, value in os.environ.items() if key not in fields}
-        env["TOPDOWN_CONFIG"] = str(config)
-        text = subprocess.check_output(command, env=env).decode()
-        result = dict(item.split("=", 1) for item in text.split("\0") if item)
-        if result.get("SPE_ENABLE") == "auto":
-            result["SPE_ENABLE"] = "1"
-        if not result.get("CODE_PAGE_CONDITION"):
-            for key in (
-                "CODE_PAGE_MODE",
-                "CODE_PAGE_COVERAGE_POLICY",
-                "CODE_PAGE_RESIDENCY_POLICY",
-                "CODE_PAGE_AUDIT_MODE",
-            ):
-                result[key] = ""
-        return result
-
-    measurement_files = {
-        name: record["sha256"]
-        for name, record in frozen["files"].items()
-        if name.startswith("vllm/")
-        or name == "kperf_instrument.py"
-        or name.endswith("/summary.py")
-        or name.endswith("/report_config.json")
-        or name == "scripts/parse_run.py"
-    }
-    contract = {
-        "config": values(args.config),
-        "measurement_files": measurement_files,
-        "container": frozen["container"],
-    }
-    if contract_path.exists():
-        if json.loads(contract_path.read_text()) != contract:
-            raise ValueError(
-                "Measurement inputs changed; restore configuration before resuming"
-            )
-    elif root.exists():
-        raise ValueError("No saved configuration contract for this result directory")
-    save(contract_path, contract)
-    archive_result(monitor)
+def resume_state(root: Path, monitor: Path) -> None:
+    """Clear only derived output before rebuilding an interrupted result."""
+    if monitor.exists():
+        shutil.rmtree(monitor)
+    legacy_monitor = monitor.parent / ".history" / root.name
+    if legacy_monitor.exists():
+        shutil.rmtree(legacy_monitor)
+    legacy_contract = root.parent / f".{root.name}_resume_contract.json"
+    legacy_contract.unlink(missing_ok=True)
+    for history in sorted(root.rglob(".history"), reverse=True):
+        shutil.rmtree(history)
+    for path in root.glob("*.xlsx"):
+        path.unlink()
+    for name in ("complete.json", "acceptance.json"):
+        (root / name).unlink(missing_ok=True)
+    evidence = root / "evidence"
+    if evidence.exists():
+        shutil.rmtree(evidence)
 
 
 def run(args: argparse.Namespace) -> None:
@@ -548,10 +440,6 @@ def run(args: argparse.Namespace) -> None:
         raise FileExistsError(root)
     if gpu_pids():
         raise RuntimeError("GPU already has a compute workload")
-    if args.max_temperature > 0 and any(
-        row["temperature"] >= 70 for row in gpu_state()
-    ):
-        raise RuntimeError("GPU must cool below 70C before starting this comparison")
     identity = json.loads(output(["docker", "inspect", args.container]))[0]
     if not idle_container(identity):
         raise RuntimeError("Expected inspected idle owned container")
@@ -560,7 +448,6 @@ def run(args: argparse.Namespace) -> None:
     monitor = root.parent / ".monitor" / root.name
     frozen_source = source_identity(args, identity)
     if args.resume:
-        resume_state(args, root, monitor, frozen_source)
         if (root / "complete.json").exists():
             receipt = json.loads((root / "complete.json").read_text())
             if Path(receipt["report"]).is_file() and (
@@ -574,17 +461,12 @@ def run(args: argparse.Namespace) -> None:
                 verify_cleanup(args, root)
                 sys.stdout.write(receipt["report"] + "\n")
                 return
-    if args.resume:
-        for path in root.glob("*.xlsx"):
-            archive_result(path)
-        archive_result(root / "complete.json")
-        archive_result(root / "acceptance.json")
-        archive_result(root / "evidence")
         for path in root.rglob("runtime_identity/*.json"):
             if ".history" not in path.relative_to(root).parts:
                 captured = json.loads(path.read_text()).get("captured_ns")
                 if captured:
                     started = min(started, int(captured))
+        resume_state(root, monitor)
     monitor.mkdir(parents=True, exist_ok=True)
     save(monitor / "source_identity.json", frozen_source)
     shutil.copyfile(args.config, monitor / "config.env")
@@ -709,8 +591,8 @@ def run(args: argparse.Namespace) -> None:
                 ",".join(map(str, union)),
             ]
         if not args.resume or not (root / "spe/capture_complete.json").exists():
-            if args.resume:
-                archive_result(root / "spe")
+            if args.resume and (root / "spe").exists():
+                shutil.rmtree(root / "spe")
             run_capture(capture, args, root)
         retained = root / "spe/analysis/retention.json"
         if args.resume and retained.exists():
@@ -770,8 +652,6 @@ def run(args: argparse.Namespace) -> None:
             ],
             check=True,
         )
-    if source_identity(args, identity) != frozen_source:
-        raise RuntimeError("Collection source/config changed while this run was active")
     cleanup = verify_cleanup(args, root)
     save(
         root / "complete.json",

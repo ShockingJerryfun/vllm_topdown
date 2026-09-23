@@ -226,8 +226,8 @@ def write_csvs(
 ) -> None:
     raw_dir = run_dir / "raw"
     parsed_dir = run_dir / "parsed"
-    raw_dir.mkdir()
-    parsed_dir.mkdir()
+    raw_dir.mkdir(exist_ok=True)
+    parsed_dir.mkdir(exist_ok=True)
     if profile == "end_to_end":
         stages = (END_TO_END_STAGE,)
         calls = qualifier_calls or []

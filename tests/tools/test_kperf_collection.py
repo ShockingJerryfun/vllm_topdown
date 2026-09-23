@@ -658,6 +658,17 @@ def test_end_to_end_parser_selects_only_fullgraph_decode_rows(
         }
     ]
 
+    # Derived CSV output is replaceable during resume.
+    parse_run.write_csvs(
+        tmp_path,
+        [],
+        rows,
+        expected_calls=2,
+        mode="time",
+        profile="end_to_end",
+        qualifier_calls=qualifiers,
+    )
+
 
 def test_pmu_parser_does_not_mix_wall_time_into_counter_rows(
     tmp_path: Path,

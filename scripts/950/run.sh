@@ -84,14 +84,7 @@ run_round() {
     [[ -n "$SERVICE_RUNNER_PID" ]] || RUN_ROOT="$PRIMARY_RUN_ROOT" start_session
     "$COMMON_DIR/run_one.sh" "$@"
 }
-parse_checked() {
-    if ! "${PARSE_COMMAND[@]}"; then
-        if [[ ${RESUME_COLLECTION:-0} == 1 ]]; then
-            "$PYTHON_BIN" "$COMMON_DIR/resume.py" archive "${PARSE_COMMAND[2]}"
-        fi
-        return 1
-    fi
-}
+parse_checked() { "${PARSE_COMMAND[@]}"; }
 END_TO_END_STAGE=execute_model_to_sample_tokens
 END_TO_END_ROOT="$RUN_ROOT/end_to_end"
 

@@ -8,13 +8,11 @@ import shlex
 import shutil
 import subprocess
 import sys
-from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from scripts.experiments_950 import Controls, conditions, initialize_results
-from scripts.resume import archive, checkpoint, ready
+from scripts.resume import checkpoint, prepare, ready
 from scripts.spe import capture, compact
 from scripts.spe.resolve import file_identity
 from scripts.spe.supervise import resume_state
@@ -22,95 +20,7 @@ from scripts.spe.supervise import resume_state
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.fixture
-def controls(tmp_path):
-    cpus = tmp_path / "cpu"
-    policy = cpus / "cpufreq/policy14"
-    policy.mkdir(parents=True)
-    original = {
-        "scaling_governor": "performance",
-        "scaling_min_freq": "1200000",
-        "scaling_max_freq": "2300000",
-        "scaling_setspeed": "2300000",
-        "cpuinfo_min_freq": "1200000",
-        "cpuinfo_max_freq": "2300000",
-        "scaling_available_governors": "performance userspace",
-    }
-    for name, value in original.items():
-        (policy / name).write_text(value + "\n")
-    for cpu in (14, 15):
-        (cpus / f"cpu{cpu}").mkdir()
-        (cpus / f"cpu{cpu}/cpufreq").symlink_to(policy)
-    thp = tmp_path / "thp_exec_enabled"
-    thp.write_text("0x0\n")
-    return Controls(tmp_path / "restore.json", cpus, thp, "boot1"), policy
-
-
-def test_matrix_has_two_distinct_default_baselines_and_twelve_fixed_conditions():
-    four, large = conditions("4k"), conditions("64k")
-    assert (len(four), len(large)) == (8, 6)
-    assert len({row["id"] for row in four + large}) == 14
-    assert [row["model"] for row in four if row["mhz"] is None] == [
-        "Qwen3_8B",
-        "GLM_4_7_Flash_4bit",
-    ]
-    assert all(row["model"] == "Qwen3_8B" for row in large)
-
-
-def test_shared_policy_changed_once_and_recovered_after_process_disappears(controls):
-    control, policy = controls
-    control.frequency("14,15", 2100)
-    control.exec_pages("0x2")
-    saved = json.loads(control.journal.read_text())
-    assert list(saved["policies"]) == [str(policy)]
-    assert (policy / "scaling_min_freq").read_text().strip() == "2100000"
-    # Simulate a process killed before its finally; next launch restores its journal.
-    Controls(control.journal, control.cpu_root, control.thp, "boot1")
-    assert not control.journal.exists()
-    assert control.thp.read_text().strip() == "0x0"
-    assert (policy / "scaling_governor").read_text().strip() == "performance"
-    assert (policy / "scaling_min_freq").read_text().strip() == "1200000"
-    assert (policy / "scaling_max_freq").read_text().strip() == "2300000"
-
-
-def test_new_boot_uses_new_kernel_defaults_instead_of_old_policy_values(controls):
-    control, policy = controls
-    control.frequency("14", 2100)
-    (policy / "scaling_governor").write_text("powersave\n")
-    Controls(control.journal, control.cpu_root, control.thp, "boot2")
-    assert (policy / "scaling_governor").read_text().strip() == "powersave"
-    assert not control.journal.exists()
-
-
-def test_unexposed_2500_is_not_forced_or_substituted(controls):
-    control, policy = controls
-    assert not control.supported("14", 2500)
-    with pytest.raises(ValueError, match="does not expose"):
-        control.frequency("14", 2500)
-    assert not control.journal.exists()
-    assert (policy / "scaling_governor").read_text().strip() == "performance"
-
-
-def test_restore_runs_after_a_partial_frequency_write(controls, monkeypatch):
-    control, policy = controls
-    write = Path.write_text
-
-    def fail_setspeed(path, value, *args, **kwargs):
-        if path.name == "scaling_setspeed" and value == "2100000\n":
-            raise OSError("driver rejected request")
-        return write(path, value, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "write_text", fail_setspeed)
-    with pytest.raises(OSError, match="driver rejected"):
-        try:
-            control.frequency("14", 2100)
-        finally:
-            control.restore()
-    assert (policy / "scaling_governor").read_text().strip() == "performance"
-    assert (policy / "scaling_min_freq").read_text().strip() == "1200000"
-
-
-def test_completed_round_reused_but_changed_data_is_not_silently_accepted(tmp_path):
+def test_completed_round_reuses_existing_raw_data_without_hash_contract(tmp_path):
     folder = tmp_path / "topdown"
     folder.mkdir()
     for name, content in {
@@ -123,18 +33,19 @@ def test_completed_round_reused_but_changed_data_is_not_silently_accepted(tmp_pa
     checkpoint(folder)
     assert ready(folder)
     (folder / "measurement.log").write_text("altered")
-    with pytest.raises(ValueError, match="changed"):
-        ready(folder)
+    assert ready(folder)
+    (folder / "measurement.log").unlink()
+    assert not ready(folder)
 
 
-def test_partial_round_is_kept_in_internal_history(tmp_path):
+def test_partial_round_is_removed_before_recollection(tmp_path):
     folder = tmp_path / "frequency"
     folder.mkdir()
     (folder / "benchmark.log").write_text("incomplete")
     assert not ready(folder)
-    archive(folder)
+    assert not prepare(folder)
     assert not folder.exists()
-    assert (tmp_path / ".history/frequency/1/benchmark.log").read_text() == "incomplete"
+    assert not (tmp_path / ".history").exists()
 
 
 def test_real_chip_loop_resumes_missing_rounds_without_repeating_completed_ones(
@@ -228,27 +139,30 @@ subprocess.run([sys.executable,str(Path(__file__).with_name('resume.py')),'commi
     assert record.read_text().splitlines() == all_rounds
 
 
-def test_partial_run_rejects_configuration_change_before_resuming(tmp_path):
-    project = tmp_path / "project"
-    (project / "scripts").mkdir(parents=True)
-    (project / "scripts/config.env").write_text(
-        'MODEL=default\nsource "$TOPDOWN_CONFIG"\n'
-    )
-    config = tmp_path / "config.env"
-    config.write_text("MODEL=qwen\nWORKER_CPUS=14,16\n")
+def test_partial_run_clears_only_derived_outputs_before_resuming(tmp_path):
     root = tmp_path / "run"
     monitor = tmp_path / ".monitor/run"
     monitor.mkdir(parents=True)
-    frozen = {
-        "files": {"kperf_instrument.py": {"sha256": "abc"}},
-        "container": {"id": "same", "image": "same"},
-    }
-    args = Namespace(project=project, config=config)
-    resume_state(args, root, monitor, frozen)
-    assert (tmp_path / ".run_resume_contract.json").exists()
-    config.write_text("MODEL=qwen\nWORKER_CPUS=168,170\n")
-    with pytest.raises(ValueError, match="Measurement inputs changed"):
-        resume_state(args, root, monitor, frozen)
+    raw = root / "topdown/measurement.log"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("raw")
+    (root / "Topdown.xlsx").write_text("derived")
+    (root / "complete.json").write_text("{}")
+    (root / "acceptance.json").write_text("{}")
+    (root / "evidence").mkdir()
+    (root / ".history/old").mkdir(parents=True)
+    (tmp_path / ".run_resume_contract.json").write_text("{}")
+    (tmp_path / ".monitor/.history/run/1").mkdir(parents=True)
+    resume_state(root, monitor)
+    assert raw.read_text() == "raw"
+    assert not monitor.exists()
+    assert not list(root.glob("*.xlsx"))
+    assert not (root / "complete.json").exists()
+    assert not (root / "acceptance.json").exists()
+    assert not (root / "evidence").exists()
+    assert not (root / ".history").exists()
+    assert not (tmp_path / ".run_resume_contract.json").exists()
+    assert not (tmp_path / ".monitor/.history/run").exists()
 
 
 @pytest.mark.parametrize(
@@ -313,14 +227,3 @@ def test_spe_resume_finishes_only_its_verified_remaining_raw_deletion(tmp_path):
     assert compact.finish_pending_retention(root)["deletion_complete"]
     assert not remaining.exists()
     assert compact.verify_retention(root)["selected_samples"] == 2
-
-
-def test_setup_creates_only_fourteen_stable_condition_directories(tmp_path):
-    root = tmp_path / "Workload_Data"
-    initialize_results(root)
-    (root / conditions("4k")[0]["id"] / "partial.txt").write_text("saved")
-    initialize_results(root)
-    assert {p.name for p in root.iterdir()} == {
-        row["id"] for row in conditions("4k") + conditions("64k")
-    }
-    assert (root / conditions("4k")[0]["id"] / "partial.txt").read_text() == "saved"

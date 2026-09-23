@@ -34,5 +34,18 @@ Uncore Devices Table
     result = frequency.parse_report(report, [252, 254], 3)
     assert result["core_mhz"] == 2950
     assert result["uncore_mhz"] == 2700
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="selected Worker"):
         frequency.parse_report(report, [255], 3)
+
+
+def test_unavailable_rows_do_not_abort_valid_frequency_report():
+    report = """Per NUMA Frequency Table
+| 3 | 2900 | N/A |
+CPU Core Frequency Table
+| 252 | 126 | 3 | 2300 |
+| 254 | 127 | 3 | N/A |
+"""
+    result = frequency.parse_report(report, [252, 254], 3)
+    assert result["core_mhz"] == 2300
+    assert result["per_core_mhz"] == {252: 2300}
+    assert result["uncore_mhz"] is None
