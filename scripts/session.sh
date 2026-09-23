@@ -28,7 +28,15 @@ cleanup_session() {
 
 start_session() {
     export KPERF_SESSION_DIR="$RUN_ROOT/service"
-    RUN_ROOT="$RUN_ROOT" bash "$COMMON_DIR/run_one.sh" service &
+    local session_root="$RUN_ROOT"
+    if [[ ${RESUME_COLLECTION:-0} == 1 && -e "$KPERF_SESSION_DIR" ]]; then
+        local number=1
+        while [[ -e "$RUN_ROOT/.sessions/$number" ]]; do ((number+=1)); done
+        session_root="$RUN_ROOT/.sessions/$number"
+        mkdir -p "$session_root"
+        export KPERF_SESSION_DIR="$session_root/service"
+    fi
+    RUN_ROOT="$session_root" bash "$COMMON_DIR/run_one.sh" service &
     SERVICE_RUNNER_PID=$!
     export KPERF_SERVICE_RUNNER_PID=$SERVICE_RUNNER_PID
 }

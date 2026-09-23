@@ -10,6 +10,17 @@ import kperf_instrument
 from scripts import placement
 
 
+def test_service_can_remain_on_other_node(linux, monkeypatch):
+    original = placement.topology
+
+    def separated(cpu):
+        package, cluster, node, siblings = original(cpu)
+        return package, cluster, 1 if cpu == 8 else node, siblings
+
+    monkeypatch.setattr(placement, "topology", separated)
+    assert placement.validate_config()["node"] == 0
+
+
 @pytest.fixture
 def linux(tmp_path, monkeypatch):
     def mapped(value):

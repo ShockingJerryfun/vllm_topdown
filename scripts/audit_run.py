@@ -11,13 +11,14 @@ import csv
 import hashlib
 import json
 import logging
-import re
 import tempfile
 import time
 from collections.abc import Callable
 from functools import partial
 from itertools import pairwise
 from pathlib import Path
+
+import regex as re
 
 if __package__:
     from . import compare
@@ -183,6 +184,11 @@ def identity_folder(root: Path, folder: Path, env: dict) -> Path:
     require(
         Path(session).name == "service", "unrecognized shared service identity path"
     )
+    saved = Path(session)
+    if ".sessions" in saved.parts:
+        suffix = saved.parts[saved.parts.index(".sessions") :]
+        require(len(suffix) == 3 and suffix[1].isdigit(), "invalid session path")
+        return root.joinpath(*suffix)
     return root / "service"
 
 
@@ -719,6 +725,8 @@ def verify_pages(evidence: Evidence, folder: Path, scope: dict) -> dict:
         if folder == evidence.root / "spe/runs/spe"
         else "evidence/supervisor/command.json"
     )
+    if (folder / "supervisor_command.json").is_file():
+        launch_path = folder / "supervisor_command.json"
     command = json.loads(evidence.text(launch_path))
     require(isinstance(command, list), "host launch command evidence must be a list")
     verify_code_guard(evidence, evidence.json(manifest), command)

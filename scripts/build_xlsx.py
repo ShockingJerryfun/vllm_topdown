@@ -249,6 +249,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compact-report", action="store_true")
     parser.add_argument("--spe-dir", type=Path)
     parser.add_argument("--spe-report", type=Path)
+    parser.add_argument("--defer-spe", action="store_true")
     return parser.parse_args()
 
 
@@ -865,7 +866,9 @@ def export_details(root: Path) -> None:
     entries = []
     for source in sorted(root.rglob("*.csv")):
         relative = source.relative_to(root)
-        if relative.parts[0] in {"details", "spe", "evidence"}:
+        if relative.parts[0] in {"details", "spe", "evidence"} or any(
+            part.startswith(".") for part in relative.parts
+        ):
             continue
         destination = target / "topdown" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -996,7 +999,9 @@ def build_workbook(args: argparse.Namespace, groups: tuple[GroupSpec, ...]) -> P
             if archive.testzip() is not None:
                 raise ValueError("Invalid compact workbook archive")
     spe_dir = getattr(args, "spe_dir", None) or args.run_root / "spe" / "analysis"
-    if getattr(args, "spe_dir", None) is not None or spe_dir.exists():
+    if not getattr(args, "defer_spe", False) and (
+        getattr(args, "spe_dir", None) is not None or spe_dir.exists()
+    ):
         report = (
             getattr(args, "spe_report", None)
             or Path(__file__).parent / "spe" / "report.py"

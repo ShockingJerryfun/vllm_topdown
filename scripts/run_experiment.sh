@@ -19,7 +19,9 @@ COMMAND=("$HOST_PYTHON" "$SCRIPT_DIR/spe/supervise.py"
     --container "$CONTAINER" --python "$PYTHON_BIN" --chip "$CHIP" --reaper "$SUBREAPER_BIN"
     --profile "$COLLECTION_PROFILE" --cpus "$WORKER_CPUS" --pool "$WORKER_POOL_CPUS"
     --service "$SERVICE_CPUS" --client "$CLIENT_CPUS" --node "$WORKER_NUMA_NODE" --gpu "$GPU_ID"
-    --binary-cache "$SPE_BINARY_CACHE" --lock "$EXPERIMENT_LOCK")
+    --binary-cache "$SPE_BINARY_CACHE" --lock "$EXPERIMENT_LOCK"
+    --max-temperature "${GPU_THERMAL_LIMIT:-85}")
+[[ ${RESUME_COLLECTION:-0} != 1 ]] || COMMAND+=(--resume)
 [[ -z ${CODE_PAGE_CONDITION:-} ]] || COMMAND+=(--pages "$CODE_PAGE_CONDITION")
 [[ ${CODE_PAGE_AUDIT_MODE:-strict} != observe ]] || COMMAND+=(--observe-pages)
 [[ "$SPE_ENABLE" == 0 ]] || COMMAND+=(--spe)

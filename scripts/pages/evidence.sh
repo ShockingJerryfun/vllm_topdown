@@ -7,7 +7,7 @@ page_snapshot() {
         return 2
     }
     local label=$1 worker identity page_dir="$RUN_DIR/pages" cohort="" directory=""
-    if [[ -n ${SESSION_DIR:-} && ${KPERF_TARGET:-} == execute_model_to_sample_tokens \
+    if [[ ${RESUME_COLLECTION:-0} != 1 && -n ${SESSION_DIR:-} && ${KPERF_TARGET:-} == execute_model_to_sample_tokens \
         && ${KPERF_QUALIFIER:-} == run_fullgraph && "$LABEL" != spe ]]; then
         [[ $(basename "$RUN_ROOT") == end_to_end ]] || return 2
         cohort=persistent_end_to_end

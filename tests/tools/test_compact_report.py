@@ -69,3 +69,14 @@ def test_spe_percentages_are_fractions_and_identity_stays_in_csv() -> None:
     pc["event_present"] = 0
     values = dict(zip(report.SUMMARY_KEYS, report.summary_values(pc, 10), strict=True))
     assert values["event_2_rate"] is None
+
+
+def test_csv_export_excludes_internal_interruption_history(tmp_path: Path) -> None:
+    live = tmp_path / "topdown/parsed/stage.csv"
+    history = tmp_path / ".history/topdown/1/parsed/stage.csv"
+    for path in (live, history):
+        path.parent.mkdir(parents=True)
+        path.write_text("cycles\n100\n")
+    build_xlsx.export_details(tmp_path)
+    entries = json.loads((tmp_path / "details/index.json").read_text())
+    assert [row["source"] for row in entries] == ["topdown/parsed/stage.csv"]

@@ -17,9 +17,25 @@ import time
 from pathlib import Path
 
 if __package__:
-    from .capture import code_page_guard, gpu_pids, gpu_state, output, save
+    from .capture import (
+        code_page_guard,
+        gpu_pids,
+        gpu_state,
+        idle_container,
+        output,
+        save,
+    )
+    from .compact import finish_pending_retention, verify_retention
 else:
-    from capture import code_page_guard, gpu_pids, gpu_state, output, save
+    from capture import (
+        code_page_guard,
+        gpu_pids,
+        gpu_state,
+        idle_container,
+        output,
+        save,
+    )
+    from compact import finish_pending_retention, verify_retention
 
 
 def interrupt(signum: int, _frame: object) -> None:
@@ -261,9 +277,20 @@ def source_identity(args: argparse.Namespace, container: dict) -> dict:
 
 def verify_cleanup(args: argparse.Namespace, root: Path) -> dict:
     identities = []
+    current_boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     for path in root.rglob("placement_identity.json"):
+        if ".history" in path.relative_to(root).parts:
+            continue
+        boot_path = path.parent / "boot_id"
+        if boot_path.exists() and boot_path.read_text().strip() != current_boot:
+            continue
         identities.append(json.loads(path.read_text())["starts"])
     for path in root.rglob("benchmark_client/process.stat"):
+        if ".history" in path.relative_to(root).parts:
+            continue
+        boot_path = path.parent.parent / "boot_id"
+        if boot_path.exists() and boot_path.read_text().strip() != current_boot:
+            continue
         text = path.read_text()
         fields = text.rsplit(")", 1)[1].split()
         identities.append({text.split(" ", 1)[0]: int(fields[19])})
@@ -372,7 +399,9 @@ def monitor_process(
                 + "\n"
             )
             stream.flush()
-            if any(row["temperature"] >= args.max_temperature for row in state):
+            if args.max_temperature > 0 and any(
+                row["temperature"] >= args.max_temperature for row in state
+            ):
                 raise RuntimeError("GPU reached experiment thermal stop threshold")
             for pid in pids:
                 try:
@@ -388,26 +417,175 @@ def monitor_process(
         raise RuntimeError(f"Topdown runner exited with code {process.returncode}")
 
 
+def archive_result(path: Path) -> None:
+    if not path.exists():
+        return
+    history = path.parent / ".history" / path.name
+    history.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (history / str(number)).exists():
+        number += 1
+    path.rename(history / str(number))
+
+
+def resume_state(
+    args: argparse.Namespace, root: Path, monitor: Path, frozen: dict
+) -> None:
+    """Match scientific inputs before reusing rounds, preserving prior provenance."""
+    contract_path = root.parent / f".{root.name}_resume_contract.json"
+    fields = [
+        "MODEL",
+        "VLLM_SITE",
+        "VLLM_VERSION",
+        "VLLM_USE_V2_MODEL_RUNNER",
+        "GPU_ID",
+        "BLOCK_SIZE",
+        "MAX_MODEL_LEN",
+        "MAX_NUM_SEQS",
+        "MAX_NUM_BATCHED_TOKENS",
+        "TENSOR_PARALLEL_SIZE",
+        "DATA_PARALLEL_SIZE",
+        "DTYPE",
+        "GPU_MEMORY_UTILIZATION",
+        "PREFIX_CACHING_FLAG",
+        "SERVER_SEED",
+        "SERVER_FLAGS",
+        "RANDOM_INPUT_LEN",
+        "RANDOM_OUTPUT_LEN",
+        "RANDOM_RANGE_RATIO",
+        "NUM_PROMPTS",
+        "NUM_WARMUPS",
+        "MAX_CONCURRENCY",
+        "REQUEST_RATE",
+        "IGNORE_EOS_FLAG",
+        "TEMPERATURE",
+        "BENCH_SEED",
+        "WORKER_CPUS",
+        "WORKER_POOL_CPUS",
+        "WORKER_NUMA_NODE",
+        "SERVICE_CPUS",
+        "CLIENT_CPUS",
+        "HOTSPOT_SCOPE",
+        "ROUND_WARMUPS",
+        "WARMUP_SCOPE",
+        "CODE_PAGE_CONDITION",
+        "CODE_PAGE_MODE",
+    ]
+
+    fields += [
+        "COLLECTION_PROFILE",
+        "SPE_ENABLE",
+        "FREQUENCY_ENABLE",
+        "PERF_EVENT",
+        "PERF_PERIOD",
+        "CODE_PAGE_COVERAGE_POLICY",
+        "CODE_PAGE_RESIDENCY_POLICY",
+        "CODE_PAGE_AUDIT_MODE",
+    ]
+    fields += [
+        line.split("=", 1)[0]
+        for line in (args.project / "scripts/config.env").read_text().splitlines()
+        if line.startswith("EVENTS_950_")
+    ]
+
+    def values(config: Path) -> dict:
+        command = [
+            "bash",
+            "-c",
+            (
+                'set -a; source "$1"; shift; for key; do '
+                'printf "%s=%s\\0" "$key" "${!key-}"; done'
+            ),
+            "config",
+            str(args.project / "scripts/config.env"),
+            *fields,
+        ]
+        env = {key: value for key, value in os.environ.items() if key not in fields}
+        env["TOPDOWN_CONFIG"] = str(config)
+        text = subprocess.check_output(command, env=env).decode()
+        result = dict(item.split("=", 1) for item in text.split("\0") if item)
+        if result.get("SPE_ENABLE") == "auto":
+            result["SPE_ENABLE"] = "1"
+        if not result.get("CODE_PAGE_CONDITION"):
+            for key in (
+                "CODE_PAGE_MODE",
+                "CODE_PAGE_COVERAGE_POLICY",
+                "CODE_PAGE_RESIDENCY_POLICY",
+                "CODE_PAGE_AUDIT_MODE",
+            ):
+                result[key] = ""
+        return result
+
+    measurement_files = {
+        name: record["sha256"]
+        for name, record in frozen["files"].items()
+        if name.startswith("vllm/")
+        or name == "kperf_instrument.py"
+        or name.endswith("/summary.py")
+        or name.endswith("/report_config.json")
+        or name == "scripts/parse_run.py"
+    }
+    contract = {
+        "config": values(args.config),
+        "measurement_files": measurement_files,
+        "container": frozen["container"],
+    }
+    if contract_path.exists():
+        if json.loads(contract_path.read_text()) != contract:
+            raise ValueError(
+                "Measurement inputs changed; restore configuration before resuming"
+            )
+    elif root.exists():
+        raise ValueError("No saved configuration contract for this result directory")
+    save(contract_path, contract)
+    archive_result(monitor)
+
+
 def run(args: argparse.Namespace) -> None:
     started = time.time_ns()
     root = args.run.resolve()
-    if root.exists():
+    if root.exists() and not args.resume:
         raise FileExistsError(root)
     if gpu_pids():
         raise RuntimeError("GPU already has a compute workload")
-    if any(row["temperature"] >= 70 for row in gpu_state()):
+    if args.max_temperature > 0 and any(
+        row["temperature"] >= 70 for row in gpu_state()
+    ):
         raise RuntimeError("GPU must cool below 70C before starting this comparison")
     identity = json.loads(output(["docker", "inspect", args.container]))[0]
-    if not identity["State"]["Running"] or identity["Config"]["Cmd"] != [
-        "sleep",
-        "infinity",
-    ]:
+    if not idle_container(identity):
         raise RuntimeError("Expected inspected idle owned container")
     namespace = os.readlink(f"/proc/{identity['State']['Pid']}/ns/pid")
     root.parent.mkdir(parents=True, exist_ok=True)
     monitor = root.parent / ".monitor" / root.name
-    monitor.mkdir(parents=True)
     frozen_source = source_identity(args, identity)
+    if args.resume:
+        resume_state(args, root, monitor, frozen_source)
+        if (root / "complete.json").exists():
+            receipt = json.loads((root / "complete.json").read_text())
+            if Path(receipt["report"]).is_file() and (
+                not args.pages
+                or (
+                    (root / "acceptance.json").exists()
+                    and json.loads((root / "acceptance.json").read_text())["status"]
+                    == "pass"
+                )
+            ):
+                verify_cleanup(args, root)
+                sys.stdout.write(receipt["report"] + "\n")
+                return
+    if args.resume:
+        for path in root.glob("*.xlsx"):
+            archive_result(path)
+        archive_result(root / "complete.json")
+        archive_result(root / "acceptance.json")
+        archive_result(root / "evidence")
+        for path in root.rglob("runtime_identity/*.json"):
+            if ".history" not in path.relative_to(root).parts:
+                captured = json.loads(path.read_text()).get("captured_ns")
+                if captured:
+                    started = min(started, int(captured))
+    monitor.mkdir(parents=True, exist_ok=True)
     save(monitor / "source_identity.json", frozen_source)
     shutil.copyfile(args.config, monitor / "config.env")
     if args.pages:
@@ -416,10 +594,16 @@ def run(args: argparse.Namespace) -> None:
     command = [
         "docker",
         "exec",
+        "-w",
+        "/tmp",
         "-e",
         f"TOPDOWN_CONFIG={args.config}",
         "-e",
         f"RUN_ROOT={root}",
+        "-e",
+        f"RESUME_COLLECTION={int(args.resume)}",
+        "-e",
+        f"TOPDOWN_SUPERVISOR_COMMAND={monitor / 'command.json'}",
         "-e",
         f"COLLECTION_PROFILE={args.profile}",
         "-e",
@@ -524,45 +708,54 @@ def run(args: argparse.Namespace) -> None:
                 "--launch-cpus",
                 ",".join(map(str, union)),
             ]
-        run_capture(capture, args, root)
-        native_library = root / "spe/evidence/fast_scan.so"
-        subprocess.run(
-            [
-                "cc",
-                "-O3",
-                "-std=c11",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-shared",
-                "-fPIC",
-                str(scripts / "fast_scan.c"),
-                "-o",
-                str(native_library),
-            ],
-            check=True,
-        )
-        subprocess.run(
-            [
-                sys.executable,
-                str(scripts / "decode.py"),
-                "--run-dir",
-                str(root / "spe"),
-                "--native-library",
-                str(native_library),
-            ],
-            check=True,
-        )
-        subprocess.run(
-            [
-                sys.executable,
-                str(scripts / "compact.py"),
-                "--run",
-                str(root / "spe"),
-                "--discard-raw",
-            ],
-            check=True,
-        )
+        if not args.resume or not (root / "spe/capture_complete.json").exists():
+            if args.resume:
+                archive_result(root / "spe")
+            run_capture(capture, args, root)
+        retained = root / "spe/analysis/retention.json"
+        if args.resume and retained.exists():
+            if not json.loads(retained.read_text()).get("deletion_complete"):
+                finish_pending_retention(root / "spe")
+            verify_retention(root / "spe")
+        else:
+            native_library = root / "spe/evidence/fast_scan.so"
+            subprocess.run(
+                [
+                    "cc",
+                    "-O3",
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-shared",
+                    "-fPIC",
+                    str(scripts / "fast_scan.c"),
+                    "-o",
+                    str(native_library),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(scripts / "decode.py"),
+                    "--run-dir",
+                    str(root / "spe"),
+                    "--native-library",
+                    str(native_library),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(scripts / "compact.py"),
+                    "--run",
+                    str(root / "spe"),
+                    "--discard-raw",
+                ],
+                check=True,
+            )
         subprocess.run(
             [
                 "docker",
@@ -585,6 +778,11 @@ def run(args: argparse.Namespace) -> None:
         {
             "started_ns": started,
             "finished_ns": time.time_ns(),
+            "sessions": [
+                str(path.relative_to(root))
+                for path in root.rglob("service/placement_identity.json")
+                if ".history" not in path.relative_to(root).parts
+            ],
             "spe": args.spe,
             "report": str(reports[0]),
             "gpu_pids": cleanup["gpu_pids"],
@@ -627,6 +825,7 @@ def main() -> None:
     parser.add_argument("--pages", type=Path)
     parser.add_argument("--observe-pages", action="store_true")
     parser.add_argument("--spe", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--binary-cache", type=Path, required=True)
     parser.add_argument("--max-temperature", type=int, default=85)
     parser.add_argument("--lock", type=Path, required=True)

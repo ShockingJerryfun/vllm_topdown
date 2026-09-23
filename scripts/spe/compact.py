@@ -12,10 +12,12 @@ from collections import Counter
 from pathlib import Path
 
 if __package__:
+    from .capture import save
     from .decode import load_windows, select_window
     from .records import normalize_packets, read_packet
     from .resolve import file_identity
 else:
+    from capture import save
     from decode import load_windows, select_window
     from records import normalize_packets, read_packet
     from resolve import file_identity
@@ -113,23 +115,23 @@ def compact(root: Path, discard_raw: bool = False) -> dict:
         deletion_complete=False,
     )
     receipt = analysis / "retention.json"
-    receipt.write_text(json.dumps(result, indent=2) + "\n")
+    save(receipt, result)
     if discard_raw:
         for entry in raw_files:
             Path(entry["path"]).unlink()
         result["deletion_complete"] = True
-        receipt.write_text(json.dumps(result, indent=2) + "\n")
+        save(receipt, result)
     return result
 
 
-def verify_retention(root: Path) -> dict:
+def verify_retention(root: Path, *, allow_pending: bool = False) -> dict:
     """Verify the replay receipt's file hashes without repeating the packet scan."""
     root = root.resolve()
     receipt = json.loads((root / "analysis/retention.json").read_text())
     if not (
         receipt.get("status") == "pass"
         and receipt.get("raw_retention") == "selected"
-        and receipt.get("deletion_complete") is True
+        and (receipt.get("deletion_complete") is True or allow_pending)
         and receipt.get("selected_samples", 0) > 0
     ):
         raise ValueError("SPE selected replay receipt is incomplete")
@@ -167,6 +169,24 @@ def verify_retention(root: Path) -> dict:
         receipt[key] != audit[key] for key in ("selected_samples", "pc_count")
     ):
         raise ValueError("SPE replay receipt differs from capture/decoder")
+    return receipt
+
+
+def finish_pending_retention(root: Path) -> dict:
+    """Finish an interrupted raw deletion using the already-verified receipt."""
+    root = root.resolve()
+    receipt = verify_retention(root, allow_pending=True)
+    for entry in receipt["original_inputs"]:
+        path = Path(entry["path"])
+        if path.parent != root / "data" or path.is_symlink():
+            raise ValueError("Raw deletion is restricted to this capture's data")
+        if path.exists():
+            actual = file_identity(path)
+            if any(actual[key] != entry[key] for key in ("sha256", "size")):
+                raise ValueError(f"Raw input changed: {path}")
+            path.unlink()
+    receipt["deletion_complete"] = True
+    save(root / "analysis/retention.json", receipt)
     return receipt
 
 

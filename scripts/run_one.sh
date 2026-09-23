@@ -96,8 +96,18 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [[ ${RESUME_COLLECTION:-0} == 1 && "$LABEL" != service ]]; then
+    resume_rc=0
+    "$PYTHON_BIN" "$SCRIPT_DIR/resume.py" prepare "$RUN_DIR" || resume_rc=$?
+    [[ $resume_rc != 10 ]] || exit 0
+    [[ $resume_rc == 0 ]] || exit "$resume_rc"
+fi
 [[ ! -e "$RUN_DIR" ]] || { printf 'Exists: %s\n' "$RUN_DIR" >&2; exit 2; }
 install -d -m 755 "$RUN_DIR"
+cat /proc/sys/kernel/random/boot_id > "$RUN_DIR/boot_id"
+if [[ -n ${TOPDOWN_SUPERVISOR_COMMAND:-} ]]; then
+    cp "$TOPDOWN_SUPERVISOR_COMMAND" "$RUN_DIR/supervisor_command.json"
+fi
 
 source "$SCRIPT_DIR/placement.sh"
 if [[ -n ${CODE_PAGE_CONDITION:-} ]]; then
@@ -430,4 +440,7 @@ if [[ "$LABEL" == hotspot ]]; then
     "${PERF_REPORT_COMMAND[@]}" > "$RUN_DIR/perf_report.txt" 2>&1
 fi
 
+if [[ ${RESUME_COLLECTION:-0} == 1 ]]; then
+    "$PYTHON_BIN" "$SCRIPT_DIR/resume.py" commit "$RUN_DIR"
+fi
 printf 'completed %s\n' "$LABEL"

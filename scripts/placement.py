@@ -6,10 +6,11 @@
 import argparse
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
+
+import regex as re
 
 
 def cpu_list(value: str) -> set[int]:
@@ -57,8 +58,8 @@ def validate_config() -> dict[str, object]:
     info = {cpu: topology(cpu) for cpu in union}
     if len({info[cpu][:3] for cpu in pool}) != 1:
         raise ValueError("Worker pool must share socket, cluster and NUMA node")
-    if any(info[cpu][2] != node for cpu in pool | service):
-        raise ValueError("Worker and service CPUs must use the configured NUMA node")
+    if any(info[cpu][2] != node for cpu in pool):
+        raise ValueError("Worker CPUs must use the configured NUMA node")
     if len({frozenset(info[cpu][3]) for cpu in pool}) != 4:
         raise ValueError("Worker pool contains SMT siblings of the same physical core")
     reserved = set().union(*(info[cpu][3] for cpu in pool))

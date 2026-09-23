@@ -10,7 +10,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import signal
 import stat
@@ -20,13 +19,40 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
+import regex as re
+
 LOGGER = logging.getLogger(__name__)
 EVENT = "arm_spe_0/load_filter=1,store_filter=1,jitter=1,ts_enable=1,pa_enable=1/u"
 
 
 def save(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w") as stream:
+        stream.write(json.dumps(value, indent=2) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def idle_container(identity: dict) -> bool:
+    """Accept the two observed idle commands, including the 950 bash wrapper."""
+    program, arguments = identity.get("Path"), identity.get("Args")
+    return bool(identity["State"]["Running"]) and (
+        (
+            program in ("sleep", "/bin/sleep", "/usr/bin/sleep")
+            and arguments == ["infinity"]
+        )
+        or (
+            program in ("bash", "/bin/bash", "/usr/bin/bash")
+            and arguments == ["-c", "exec sleep infinity"]
+        )
+    )
 
 
 def output(command: list[str], timeout: int = 60) -> str:
@@ -197,7 +223,9 @@ def wait_gate(
                 stream.write(
                     json.dumps({"time_ns": time.time_ns(), "gpus": state}) + "\n"
                 )
-            if any(row["temperature"] >= temperature for row in state):
+            if temperature > 0 and any(
+                row["temperature"] >= temperature for row in state
+            ):
                 raise RuntimeError("GPU reached the experiment thermal stop threshold")
             next_thermal = time.monotonic() + 5
         if (run / "gates" / name).exists():
@@ -223,6 +251,67 @@ def host_worker(container_pid: int, container_worker: int) -> int:
     if gpu_pids() != matches:
         raise RuntimeError("GPU ownership does not match this container Worker")
     return matches[0]
+
+
+def native_code_pages(pid: int) -> dict:
+    """Observe native executable backing, without advice, migration or prefault."""
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    counts = {
+        "present": 0,
+        "noncompound": 0,
+        "compound": 0,
+        "not_present": 0,
+        "unknown": 0,
+    }
+    with (
+        Path(f"/proc/{pid}/pagemap").open("rb", buffering=0) as pagemap,
+        Path("/proc/kpageflags").open("rb", buffering=0) as flags,
+    ):
+        for line in Path(f"/proc/{pid}/maps").read_text().splitlines():
+            parts = line.split(maxsplit=5)
+            name = parts[5] if len(parts) == 6 else ""
+            if (
+                "x" not in parts[1]
+                or name.startswith("/dev/")
+                or name in ("[vdso]", "[vsyscall]", "[vvar]")
+            ):
+                continue
+            begin, end = [int(value, 16) for value in parts[0].split("-")]
+            raw = os.pread(
+                pagemap.fileno(), (end - begin) // page_size * 8, begin // page_size * 8
+            )
+            expected = (end - begin) // page_size
+            counts["unknown"] += expected - len(raw) // 8
+            for offset in range(0, len(raw) - len(raw) % 8, 8):
+                entry = int.from_bytes(raw[offset : offset + 8], "little")
+                if not entry & (1 << 63):
+                    counts["not_present"] += 1
+                    continue
+                pfn = entry & ((1 << 55) - 1)
+                if not pfn:
+                    counts["unknown"] += 1
+                    continue
+                bits = os.pread(flags.fileno(), 8, pfn * 8)
+                if len(bits) != 8:
+                    counts["unknown"] += 1
+                    continue
+                value = int.from_bytes(bits, "little")
+                counts["present"] += 1
+                key = "compound" if value & ((1 << 15) | (1 << 16)) else "noncompound"
+                counts[key] += 1
+    return {
+        "pid": pid,
+        "base_page_bytes": page_size,
+        **counts,
+        "scope": "ordinary executable mappings at SPE request endpoints",
+        "status": "pass"
+        if (
+            page_size == 4096
+            and counts["present"] > 0
+            and counts["compound"] == counts["unknown"] == 0
+        )
+        else "fail",
+    }
 
 
 def snapshot(run: Path, pid: int, label: str, cpus: set[int]) -> None:
@@ -455,10 +544,7 @@ def capture(args: argparse.Namespace) -> None:
     if gpu_pids():
         raise RuntimeError("Existing GPU compute workload; no service started")
     identity = json.loads(output(["docker", "inspect", args.container]))[0]
-    if not identity["State"]["Running"] or identity["Config"]["Cmd"] != [
-        "sleep",
-        "infinity",
-    ]:
+    if not idle_container(identity):
         raise RuntimeError("Expected an already inspected owned idle container")
     cpus = {int(value) for value in args.cpus.split(",")}
     for name in ("data", "evidence", "gates", "runs"):
@@ -532,6 +618,8 @@ def capture(args: argparse.Namespace) -> None:
     command = [
         "docker",
         "exec",
+        "-w",
+        "/tmp",
         "-e",
         f"TOPDOWN_CONFIG={args.config}",
         "-e",
@@ -584,6 +672,11 @@ def capture(args: argparse.Namespace) -> None:
             (run / "gates/go_0").touch()
             wait_gate(run, "done_0", service, args.max_temperature, 240)
             snapshot(run, worker, "before", cpus)
+            if os.environ.get("NATIVE_CODE_PAGE_CHECK") == "1":
+                save(
+                    run / "evidence/before/native_code_pages.json",
+                    native_code_pages(worker),
+                )
             clock_pairs(run, cpus, "before")
             raw_files = []
             path = run / "data" / "perf.data"
@@ -650,6 +743,11 @@ def capture(args: argparse.Namespace) -> None:
             wait_gate(run, "pages_done", service, args.max_temperature, 240)
             clock_pairs(run, cpus, "after")
             snapshot(run, worker, "after", cpus)
+            if os.environ.get("NATIVE_CODE_PAGE_CHECK") == "1":
+                save(
+                    run / "evidence/after/native_code_pages.json",
+                    native_code_pages(worker),
+                )
             binary_rows = snapshot_binaries(
                 run, worker, args.binary_cache.resolve(), cpus, args.node
             )

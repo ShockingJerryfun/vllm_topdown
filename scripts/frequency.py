@@ -61,7 +61,13 @@ def main():
     try:
         with (root / "devkit.log").open("w") as stream:
             proc = subprocess.Popen(
-                command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True
+                command,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=str(Path(args.devkit).parent)
+                if Path(args.devkit).is_absolute()
+                else None,
             )
             deadline = time.monotonic() + 30
             while "Starting to collect data" not in (root / "devkit.log").read_text():

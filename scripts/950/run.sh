@@ -15,9 +15,9 @@ RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/950}
     printf 'Missing openpyxl; install scripts/requirements-report.txt\n' >&2
     exit 6
 }
-[[ ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
+[[ ${RESUME_COLLECTION:-0} == 1 || ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
 install -d -m 755 "$RUN_ROOT"
-: > "$RUN_ROOT/commands.txt"
+touch "$RUN_ROOT/commands.txt"
 
 record_command() {
     local title=$1
@@ -73,29 +73,47 @@ record_command "runtime identity" "$RUN_ROOT/runtime.txt" 0 0 \
 "${RUNTIME_COMMAND[@]}" > "$RUN_ROOT/runtime.txt"
 
 EXPECTED_CALLS=$(( RANDOM_OUTPUT_LEN - 1 ))
-start_session
+PRIMARY_RUN_ROOT=$RUN_ROOT
+run_round() {
+    if [[ ${RESUME_COLLECTION:-0} == 1 ]]; then
+        local status=0
+        "$PYTHON_BIN" "$COMMON_DIR/resume.py" prepare "$RUN_ROOT/$1" || status=$?
+        [[ $status != 10 ]] || return 0
+        [[ $status == 0 ]] || return "$status"
+    fi
+    [[ -n "$SERVICE_RUNNER_PID" ]] || RUN_ROOT="$PRIMARY_RUN_ROOT" start_session
+    "$COMMON_DIR/run_one.sh" "$@"
+}
+parse_checked() {
+    if ! "${PARSE_COMMAND[@]}"; then
+        if [[ ${RESUME_COLLECTION:-0} == 1 ]]; then
+            "$PYTHON_BIN" "$COMMON_DIR/resume.py" archive "${PARSE_COMMAND[2]}"
+        fi
+        return 1
+    fi
+}
 END_TO_END_STAGE=execute_model_to_sample_tokens
 END_TO_END_ROOT="$RUN_ROOT/end_to_end"
 
 if [[ "$COLLECTION_PROFILE" == full ]]; then
-RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
+RUN_ROOT="$RUN_ROOT" run_round time
 PARSE_COMMAND=(
     "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/time"
     --mode time
     --expected-calls "$EXPECTED_CALLS"
 )
 record_command "time parse" "" 0 0 "${PARSE_COMMAND[@]}"
-"${PARSE_COMMAND[@]}"
+parse_checked
 
 while IFS='|' read -r label codes; do
-    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
+    RUN_ROOT="$RUN_ROOT" run_round "$label" "$codes" "$codes"
     PARSE_COMMAND=(
         "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label"
         --event-names "$codes"
         --expected-calls "$EXPECTED_CALLS"
     )
     record_command "$label parse" "" 0 0 "${PARSE_COMMAND[@]}"
-    "${PARSE_COMMAND[@]}"
+    parse_checked
 done <<EOF
 topdown|$EVENTS_950_TOPDOWN
 frontend_detail|$EVENTS_950_FRONTEND_DETAIL
@@ -116,9 +134,9 @@ fi
 printf '%s\n' "$COLLECTION_PROFILE" > "$RUN_ROOT/collection_profile"
 
 install -d -m 755 "$END_TO_END_ROOT"
-: > "$END_TO_END_ROOT/commands.txt"
+touch "$END_TO_END_ROOT/commands.txt"
 KPERF_TARGET="$END_TO_END_STAGE" KPERF_QUALIFIER=run_fullgraph \
-    RUN_ROOT="$END_TO_END_ROOT" "$COMMON_DIR/run_one.sh" time
+    RUN_ROOT="$END_TO_END_ROOT" run_round time
 PARSE_COMMAND=(
     "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$END_TO_END_ROOT/time"
     --mode time
@@ -126,12 +144,12 @@ PARSE_COMMAND=(
     --expected-calls "$EXPECTED_CALLS"
 )
 record_command "end-to-end time parse" "" 0 0 "${PARSE_COMMAND[@]}"
-"${PARSE_COMMAND[@]}"
+parse_checked
 
 while IFS='|' read -r label codes; do
     KPERF_TARGET="$END_TO_END_STAGE" KPERF_QUALIFIER=run_fullgraph \
         RUN_ROOT="$END_TO_END_ROOT" \
-        "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
+        run_round "$label" "$codes" "$codes"
     PARSE_COMMAND=(
         "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$END_TO_END_ROOT/$label"
         --event-names "$codes"
@@ -139,7 +157,7 @@ while IFS='|' read -r label codes; do
         --expected-calls "$EXPECTED_CALLS"
     )
     record_command "end-to-end $label parse" "" 0 0 "${PARSE_COMMAND[@]}"
-    "${PARSE_COMMAND[@]}"
+    parse_checked
 done <<EOF
 topdown|$EVENTS_950_TOPDOWN
 frontend_detail|$EVENTS_950_FRONTEND_DETAIL
@@ -157,10 +175,10 @@ imix2|$EVENTS_950_IMIX2
 EOF
 
 if [[ "$COLLECTION_PROFILE" == full ]]; then
-    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
+    RUN_ROOT="$RUN_ROOT" run_round hotspot
 fi
 if [[ ${FREQUENCY_ENABLE:-0} == 1 ]]; then
-    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" frequency
+    RUN_ROOT="$RUN_ROOT" run_round frequency
 fi
 stop_session
 SUMMARY_COMMAND=("$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT")
@@ -178,6 +196,7 @@ BUILD_COMMAND=(
     --compact-report
     --include-end-to-end
 )
+[[ ${SPE_ENABLE:-0} != 1 ]] || BUILD_COMMAND+=(--defer-spe)
 record_command "Excel report" "" 0 0 "${BUILD_COMMAND[@]}"
 "${BUILD_COMMAND[@]}"
 printf '[950] completed: %s\n' "$RUN_ROOT"
