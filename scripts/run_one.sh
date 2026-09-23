@@ -434,7 +434,7 @@ if [[ "$LABEL" == hotspot ]]; then
     "${PERF_REPORT_COMMAND[@]}" > "$RUN_DIR/perf_report.txt" 2>&1
 fi
 
-if [[ ${RESUME_COLLECTION:-0} == 1 ]]; then
+if [[ ${RESUME_COLLECTION:-0} == 1 && "$LABEL" != spe ]]; then
     "$PYTHON_BIN" "$SCRIPT_DIR/resume.py" commit "$RUN_DIR"
 fi
 printf 'completed %s\n' "$LABEL"
