@@ -12,19 +12,19 @@ import gzip
 import json
 import logging
 import math
-import re
 import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 from xml.sax.saxutils import escape, quoteattr
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import regex as re
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
@@ -34,6 +34,24 @@ REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 SHEET_NAMES = ("SPE",)
 MAX_ROWS = 1_048_576
 COUNTERS = (("0", "TOT"), ("1", "ISSUE"), ("2", "XLAT"), ("6", "Counter 6"))
+# Linux perf arm-spe-decoder.h / arm-spe.c, HIP12 (MIDR 0x48 / part 0xd06).
+# Names retain peer topology; no generic/Neoverse decoding for other CPUs.
+HIP12_SOURCES = {
+    0x0: "Peer CPU",
+    0x1: "Peer CPU HITM",
+    0x2: "L3",
+    0x3: "L3 HITM",
+    0x4: "Peer Cluster",
+    0x5: "Peer Cluster HITM",
+    0x6: "Remote Socket",
+    0x7: "Remote Socket HITM",
+    0x8: "Local RAM",
+    0x9: "Remote RAM",
+    0xD: "NC/Device",
+    0x10: "L2",
+    0x11: "L2 HITM",
+    0x12: "L1",
+}
 NS = {"s": MAIN_NS}
 EVENT_NAMES = {
     0: "EXCEPTION-GEN",
@@ -73,6 +91,15 @@ class Styles:
     body: int
     integer: int
     decimal: int
+
+
+@dataclass
+class SampleSummary:
+    samples: int = 0
+    addresses: Counter[str] = field(default_factory=Counter)
+    sources: Counter[str] = field(default_factory=Counter)
+    paired_count: int = 0
+    difference_sum: int = 0
 
 
 SAMPLE_COLUMNS = (
@@ -213,11 +240,11 @@ SUMMARY_KEYS = (
     "samples",
     "sample_share",
     "counter_0_mean",
-    "counter_0_median",
-    "counter_0_p95",
     "counter_1_mean",
+    "difference_mean",
     "counter_2_mean",
-    "counter_2_p95",
+    "pa_summary",
+    "data_source_summary",
     "event_2_rate",
     "event_3_rate",
     "event_4_rate",
@@ -228,9 +255,18 @@ SUMMARY_KEYS = (
     "ram_numa_counts",
     "physical_resource_counts",
 )
+SUMMARY_EXTRA_COLUMNS = (
+    Column("difference_mean", "TOT−ISSUE\n均值 cycles", 21),
+    Column("pa_summary", "数据 PA\n高频地址（次数）", 38),
+    Column("data_source_summary", "Data Source\n占该指令全部样本", 46),
+)
 SUMMARY_COLUMNS = tuple(
     next(
-        (column for column in PC_COLUMNS if column.key == key),
+        (
+            column
+            for column in (*PC_COLUMNS, *SUMMARY_EXTRA_COLUMNS)
+            if column.key == key
+        ),
         Column(
             key,
             "样本占比"
@@ -245,11 +281,58 @@ SUMMARY_COLUMNS = tuple(
 )
 
 
-def summary_values(pc: dict, total: int) -> list[CellValue]:
+def source_label(sample: dict, midrs: dict) -> str:
+    """Decode explicit HIP12 Load source packets only; never infer missing ones."""
+    raw = sample.get("data_source")
+    if raw is None:
+        return "缺包/未知"
+    code = int(raw, 16)
+    raw_label = hex(code)
+    op_class, op_value = sample.get("op_class"), sample.get("op_value")
+    if op_class != 1 or op_value is None or int(op_value, 16) & 1:
+        return f"{raw_label}（非Load/操作未知）"
+    midr = midrs.get(str(sample.get("cpu")))
+    if midr is None or int(midr, 16) & 0xFF00FFF0 != 0x4800D060:
+        return f"{raw_label}（CPU映射未确认）"
+    return f"{raw_label} {HIP12_SOURCES.get(code, '未知编码')}"
+
+
+def summarize_samples(path: Path, midrs: dict) -> dict[str, SampleSummary]:
+    summaries: dict[str, SampleSummary] = {}
+    for sample in sample_rows(path):
+        summary = summaries.setdefault(sample["pc_key"], SampleSummary())
+        summary.samples += 1
+        pa = sample.get("pa")
+        if pa is not None:
+            # Preserve addresses as exact hexadecimal text, including zero.
+            summary.addresses[hex(int(pa, 16))] += 1
+        summary.sources[source_label(sample, midrs)] += 1
+        counters = counter_values(sample)
+        if {"0", "1"} <= counters.keys():
+            summary.paired_count += 1
+            summary.difference_sum += counters["0"] - counters["1"]
+    return summaries
+
+
+def summary_values(pc: dict, total: int, extra: SampleSummary) -> list[CellValue]:
     values = dict(
         zip((column.key for column in PC_COLUMNS), pc_values(pc), strict=True)
     )
     values["sample_share"] = pc["samples"] / total
+    values["difference_mean"] = (
+        extra.difference_sum / extra.paired_count if extra.paired_count else None
+    )
+    addresses = [f"{pa} ({count})" for pa, count in extra.addresses.most_common(3)]
+    if len(extra.addresses) > 3:
+        addresses.append(f"共 {len(extra.addresses)} 个地址，完整记录见 CSV")
+    missing_pa = extra.samples - extra.addresses.total()
+    if missing_pa:
+        addresses.append(f"缺失 {missing_pa}/{extra.samples}")
+    values["pa_summary"] = "\n".join(addresses)
+    values["data_source_summary"] = "\n".join(
+        f"{source}: {count / extra.samples:.2%}"
+        for source, count in extra.sources.most_common()
+    )
     present = pc.get("event_present", 0)
     for bit in (2, 3, 4, 5, 8, 9, 10):
         values[f"event_{bit}_rate"] = (
@@ -263,9 +346,11 @@ def format_summary(workbook: Path) -> None:
     sheet = saved["SPE"]
     template = saved.worksheets[0]
     for index, key in enumerate(SUMMARY_KEYS, 1):
-        numeric = key in {"samples", "sample_share"} or key.startswith(
-            ("counter_", "event_")
-        )
+        numeric = key in {
+            "samples",
+            "sample_share",
+            "difference_mean",
+        } or key.startswith(("counter_", "event_"))
         percentage = key == "sample_share" or key.endswith("_rate")
         for row in range(2, sheet.max_row + 1):
             cell = sheet.cell(row, index)
@@ -277,6 +362,7 @@ def format_summary(workbook: Path) -> None:
                 horizontal="right" if numeric else "left",
                 vertical="center",
                 indent=1,
+                wrap_text=key in {"pa_summary", "data_source_summary"},
             )
             cell.number_format = (
                 "0.00%"
@@ -295,7 +381,15 @@ def format_summary(workbook: Path) -> None:
         alignment = copy(header.alignment)
         alignment.horizontal = "center"
         alignment.indent = 1
+        alignment.wrap_text = True
         header.alignment = alignment
+    for row in range(2, sheet.max_row + 1):
+        lines = max(
+            str(sheet.cell(row, SUMMARY_KEYS.index(key) + 1).value or "").count("\n")
+            + 1
+            for key in ("pa_summary", "data_source_summary")
+        )
+        sheet.row_dimensions[row].height = max(25, 20 * lines)
     sheet.freeze_panes = "D2"
     sheet.column_dimensions["A"].width = 28
     sheet.column_dimensions["B"].width = 22
@@ -650,7 +744,11 @@ def append_report(workbook: Path, spe_dir: Path) -> dict[str, int]:
             raise ValueError("PC sample counts must be positive integers")
         expected[key] = count
     sample_path = spe_dir / "samples.jsonl.gz"
-    observed = Counter(sample.get("pc_key") for sample in sample_rows(sample_path))
+    capture_path = spe_dir.parent / "spe_capture.json"
+    capture = json.loads(capture_path.read_text()) if capture_path.is_file() else {}
+    midrs = mapping(capture.get("cpu_midrs", {}), "capture CPU MIDRs")
+    summaries = summarize_samples(sample_path, midrs)
+    observed = Counter({key: summary.samples for key, summary in summaries.items()})
     if observed != expected:
         raise ValueError("SPE samples and PC populations disagree")
     count = sum(observed.values())
@@ -683,7 +781,7 @@ def append_report(workbook: Path, spe_dir: Path) -> dict[str, int]:
         write_sheet(
             pcs_sheet,
             SUMMARY_COLUMNS,
-            (summary_values(pc, count) for pc in ordered),
+            (summary_values(pc, count, summaries[pc["pc_key"]]) for pc in ordered),
             len(pcs),
             styles,
         )

@@ -1,5 +1,19 @@
 # SPE offline contract
 
+The normal collection entry automatically appends the `SPE` instruction sheet.
+Latency columns show only means: TOT, ISSUE, TOT−ISSUE and XLAT (cycles).
+TOT−ISSUE averages paired counters from each sample, excluding missing pairs;
+it is not pure memory-service latency. PA shows the three most frequent exact
+addresses with counts, plus the distinct-address and missing counts when needed.
+All addresses and raw fields remain in `details/spe_samples.csv`.
+Data Source percentages use all samples of that PC, including missing packets.
+Capture records the selected CPUs' MIDRs automatically. Only HIP12 Load samples
+are decoded using the Linux perf
+[HiSilicon mapping](https://code.googlesource.com/linux/torvalds/linux/+/4bf54e47525dcacd4c6cdd97fb5902592414dd7a/tools/perf/util/arm-spe.c).
+Unknown CPU identities/codes and non-Load operations retain their raw code;
+missing packets are explicitly unknown, never L1. Historical captures without
+MIDRs still export raw codes. No new command or configuration switch is needed.
+
 Run with the existing Python environment, either as a module from the task root or
 as `python scripts/spe/decode.py --run-dir RUN/spe` after bundling these sibling
 modules. The decoder never accesses SSH, GPUs, `/proc`, or live device registers.

@@ -500,6 +500,16 @@ def resource_evidence(run: Path) -> None:
     )
 
 
+def cpu_midrs(cpus: set[int], root: Path = Path("/sys/devices/system/cpu")) -> dict:
+    """Retain capture-time CPU identity for implementation-specific source codes."""
+    identities = {}
+    for cpu in sorted(cpus):
+        path = root / f"cpu{cpu}/regs/identification/midr_el1"
+        if path.is_file():
+            identities[str(cpu)] = hex(int(path.read_text().strip(), 16))
+    return identities
+
+
 def dump_perf(path: Path) -> dict[str, str]:
     raw = path.with_suffix(".packets.txt.gz")
     memory = path.with_suffix(".memory.txt.gz")
@@ -591,6 +601,7 @@ def capture(args: argparse.Namespace) -> None:
             (Path("/proc") / name).read_bytes()
         )
     resource_evidence(run)
+    midrs = cpu_midrs(cpus)
     bdf = (
         output(
             [
@@ -769,6 +780,7 @@ def capture(args: argparse.Namespace) -> None:
                     "host_tid": worker,
                     "container_tid": placement["worker"],
                     "cpus": sorted(cpus),
+                    "cpu_midrs": midrs,
                     "perf_files": raw_files,
                     "windows": "data/windows.json",
                     "maps_file": "evidence/before/maps",
