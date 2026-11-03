@@ -3,7 +3,7 @@
 # 本分支：vLLM 0.26.0 默认V2 Decode八阶段与端到端PMU打点
 
 常驻采集脚本维护在 **`topdown-persistent`** 分支。
-使用方法及配置说明见 [scripts/README.md](scripts/README.md)。
+首次运行请从[测试文档](#测试文档)的第 1 篇开始。脚本参数速查见 [scripts/README.md](scripts/README.md)。
 
 ```bash
 git clone --branch topdown-persistent --single-branch \
@@ -29,6 +29,17 @@ cd vllm_topdown_persistent
 进入到 `sample_tokens()` 返回。这个区间与八阶段重叠，并包含八阶段之间未单独
 打点的同一EngineCore/Worker执行线程逻辑，包括两次Worker调用之间
 的调度代码；不包含异步输出线程后续等待D2H完成的时间。
+
+## 测试文档
+
+| 文档 | 什么时候看 |
+| --- | --- |
+| 1. [使用指南与参数参考](docs/topdown/01_使用指南.md) | 配置模型和请求，运行一次短负载，检查阶段记录和报告。 |
+| 2. [测试方法与条件切换](docs/topdown/02_测试方法.md) | 切换绑核、NUMA、页大小、频率或缓存条件，并验证设置是否生效。 |
+| 3. [PMU 指标与计时说明](docs/topdown/03_PMU与计时.md) | 按 CPU 平台查事件组、公式和分母，区分阶段耗时、请求耗时和频率。 |
+| 4. [SPE、热点与 Trace 分析指南](docs/topdown/04_采样与Trace.md) | 采集 CPU 热点或 Arm SPE，解码样本；需要关联 GPU 活动时查阅 CUDA Trace 部分。 |
+
+本分支提供常规 PMU、阶段计时、CPU 热点和 Arm SPE 采集。920B 的 22 组扩展采集需要包含 `scripts/920b/run_missing.sh` 的配套代码；Hygon 的父阶段采集也需要对应扩展。锁频和缓存分配需要平台控制工具。第 3 篇的 ReadCoreCycle 来自独立的 `vllm_ops` 仓库，第 4 篇的 CUDA Trace 使用 Nsight Systems。
 
 ## 打点工具原理
 
