@@ -41,6 +41,8 @@ cd vllm_topdown_persistent
 
 本分支提供常规 PMU、阶段计时、CPU 热点和 Arm SPE 采集。920B 的 22 组扩展采集需要包含 `scripts/920b/run_missing.sh` 的配套代码；Hygon 的父阶段采集也需要对应扩展。锁频和缓存分配需要平台控制工具。第 3 篇的 ReadCoreCycle 来自独立的 `vllm_ops` 仓库，第 4 篇的 CUDA Trace 使用 Nsight Systems。
 
+飞书原文导出的 Word 资料：[组件版本清单](docs/topdown/容器组件版本清单.docx)、[环境前置](docs/topdown/环境前置.docx)、[部署流程](docs/topdown/部署（宿主侧全流程）.docx)、[脚本参数](docs/topdown/脚本参数说明.docx)。这些资料记录了一套具体测试环境；脚本入口和参数以本分支代码为准。
+
 ## 打点工具原理
 
 ### 运行时注入与打点边界
