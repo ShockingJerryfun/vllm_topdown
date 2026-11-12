@@ -1,13 +1,12 @@
 <!-- markdownlint-disable MD001 MD041 -->
 
-# 本分支：vLLM 0.26.0 默认V2 Decode八阶段与端到端PMU打点
+# vLLM 0.26.0 默认V2 Decode八阶段与端到端PMU打点
 
-常驻采集脚本维护在 **`topdown-persistent`** 分支。
-首次运行请从[测试文档](#测试文档)的第 1 篇开始。脚本参数速查见 [scripts/README.md](scripts/README.md)。
+常驻采集脚本维护在 GitCode 仓库的 **`main`** 分支。
+首次运行请从[部署与测试](docs/topdown/00_部署与测试.md)开始。
 
 ```bash
-git clone --branch topdown-persistent --single-branch \
-  https://github.com/ShockingJerryfun/vllm_topdown.git vllm_topdown_persistent
+git clone https://gitcode.com/fangjin888/vllm_topdown.git vllm_topdown_persistent
 cd vllm_topdown_persistent
 ```
 
@@ -25,7 +24,7 @@ cd vllm_topdown_persistent
 | `async_output_init` | `AsyncOutput.__init__()` |
 | `postprocess_sampled` | `GPUModelRunner.postprocess_sampled()` |
 
-920B和950还采集 `execute_model_to_sample_tokens`：从Worker的 `execute_model()`
+920B、950 和 Zen 4 还采集 `execute_model_to_sample_tokens`：从Worker的 `execute_model()`
 进入到 `sample_tokens()` 返回。这个区间与八阶段重叠，并包含八阶段之间未单独
 打点的同一EngineCore/Worker执行线程逻辑，包括两次Worker调用之间
 的调度代码；不包含异步输出线程后续等待D2H完成的时间。
@@ -34,14 +33,10 @@ cd vllm_topdown_persistent
 
 | 文档 | 什么时候看 |
 | --- | --- |
-| 1. [使用指南与参数参考](docs/topdown/01_使用指南.md) | 配置模型和请求，运行一次短负载，检查阶段记录和报告。 |
-| 2. [测试方法与条件切换](docs/topdown/02_测试方法.md) | 切换绑核、NUMA、页大小、频率或缓存条件，并验证设置是否生效。 |
-| 3. [PMU 指标与计时说明](docs/topdown/03_PMU与计时.md) | 按 CPU 平台查事件组、公式和分母，区分阶段耗时、请求耗时和频率。 |
-| 4. [SPE、热点与 Trace 分析指南](docs/topdown/04_采样与Trace.md) | 采集 CPU 热点或 Arm SPE，解码样本；需要关联 GPU 活动时查阅 CUDA Trace 部分。 |
-
-本分支提供常规 PMU、阶段计时、CPU 热点和 Arm SPE 采集。920B 的 22 组扩展采集需要包含 `scripts/920b/run_missing.sh` 的配套代码；Hygon 的父阶段采集也需要对应扩展。锁频和缓存分配需要平台控制工具。第 3 篇的 ReadCoreCycle 来自独立的 `vllm_ops` 仓库，第 4 篇的 CUDA Trace 使用 Nsight Systems。
-
-飞书原文导出的 Word 资料：[组件版本清单](docs/topdown/容器组件版本清单.docx)、[环境前置](docs/topdown/环境前置.docx)、[部署流程](docs/topdown/部署（宿主侧全流程）.docx)、[脚本参数](docs/topdown/脚本参数说明.docx)。这些资料记录了一套具体测试环境；脚本入口和参数以本分支代码为准。
+| [部署与测试](docs/topdown/00_部署与测试.md) | 导入镜像、配置、启动采集并检查结果。 |
+| [环境前置](docs/topdown/01_环境前置.md) | 核对宿主机、GPU、PMU、BIOS 和 NUMA。 |
+| [版本清单](docs/topdown/02_版本清单.md) | 核对宿主和容器内的组件版本。 |
+| [测试参数](docs/topdown/03_测试参数.md) | 查绑核、负载、采集开关和各平台的采集范围。 |
 
 ## 打点工具原理
 
@@ -136,7 +131,7 @@ disabled，仍由原来的 `kperf_begin/finish` 控制每段计数。
 `SUM(分子)/SUM(分母)`，不是先计算逐行比率再平均；绝对时间和绝对计数使用有效
 Decode行的算术平均。
 
-920B和950端到端同样分别运行time和13个PMU事件组。解析器用区间内实际出现的
+920B、950 和 Zen 4 端到端同样分别运行time和PMU事件组；920B 扩展配置为 22 组，默认及 950 为 13 组；Zen 4 为 14 组，可选增加共享 L3 组。解析器用区间内实际出现的
 `run_fullgraph` 作为Decode资格标记：默认应有1个Prefill原始区间和99个
 FullGraph Decode区间，只有后者进入汇总。端到端与八阶段不是可相加的第九阶段，
 因此其 `cycle占比` 固定显示 `不适用`。
@@ -157,8 +152,8 @@ cycles或GPU Kernel执行时长。
 [KPERF_TOPDOWN.md](KPERF_TOPDOWN.md)。
 
 公共采集和Excel生成代码位于根目录 `kperf_instrument.py` 和 `scripts/`；
-`920b`、`950`、`hygon_c86_7490` 目录只保留各自的事件、公式和配置。
-`scripts/config.env` 集中保存三种芯片共用的运行参数与事件组；每次
+`920b`、`950`、`hygon_c86_7490`、`zen4` 目录保留各自的事件、公式和配置。
+`scripts/config.env` 集中保存共用运行参数；每次
 采集结果目录中的 `commands.txt` 保存该次实际展开后的服务、benchmark、
 `perf`、解析和报表命令。
 `scripts/run_topdown.sh` 成功结束时会在结果目录直接生成最终工作簿，默认文件名

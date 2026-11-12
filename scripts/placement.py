@@ -32,9 +32,23 @@ def cpu_list(value: str) -> set[int]:
 def topology(cpu: int) -> tuple[int, int, int, set[int]]:
     base = Path(f"/sys/devices/system/cpu/cpu{cpu}")
     package = int((base / "topology/physical_package_id").read_text())
-    cluster = int((base / "topology/cluster_id").read_text())
-    if cluster < 0:
-        raise ValueError("Unknown cluster topology")
+    if os.environ.get("CHIP") == "zen4":
+        l3_groups = set()
+        for cache in (base / "cache").glob("index*"):
+            if (cache / "level").read_text().strip() == "3" and (
+                cache / "type"
+            ).read_text().strip() == "Unified":
+                members = cpu_list((cache / "shared_cpu_list").read_text().strip())
+                if cpu not in members:
+                    raise ValueError(f"CPU {cpu}: invalid shared L3 topology")
+                l3_groups.add(frozenset(members))
+        if len(l3_groups) != 1:
+            raise ValueError(f"CPU {cpu}: unified shared L3 topology unavailable")
+        cluster = min(next(iter(l3_groups)))
+    else:
+        cluster = int((base / "topology/cluster_id").read_text())
+        if cluster < 0:
+            raise ValueError("Unknown cluster topology")
     nodes = list(base.glob("node[0-9]*"))
     if len(nodes) != 1:
         raise ValueError(f"CPU {cpu}: NUMA topology unavailable")
@@ -66,6 +80,14 @@ def validate_config() -> dict[str, object]:
     service_cores = set().union(*(info[cpu][3] for cpu in service))
     if reserved & (service | client) or service_cores & client:
         raise ValueError("Worker pool, service and client physical cores overlap")
+    api = cpu_list(os.environ.get("API_CPUS") or os.environ["SERVICE_CPUS"])
+    engine = cpu_list(os.environ.get("ENGINE_CPUS") or os.environ["SERVICE_CPUS"])
+    if not api <= service or not engine <= service:
+        raise ValueError("API and Engine CPU sets must belong to SERVICE_CPUS")
+    if os.environ.get("API_CPUS") and os.environ.get("ENGINE_CPUS"):
+        api_cores = set().union(*(info[cpu][3] for cpu in api))
+        if api_cores & engine:
+            raise ValueError("API and Engine must use separate physical cores")
     status = Path("/proc/self/status").read_text()
     mems = re.search(r"^Mems_allowed_list:\s*(.+)$", status, re.MULTILINE)
     if mems is None or node not in cpu_list(mems[1].strip()):
@@ -196,6 +218,8 @@ def audit(api: int, identity_path: Path, bind: bool) -> dict[str, object]:
             "CLIENT_CPUS",
         )
     }
+    config["API_CPUS"] = os.environ.get("API_CPUS") or config["SERVICE_CPUS"]
+    config["ENGINE_CPUS"] = os.environ.get("ENGINE_CPUS") or config["SERVICE_CPUS"]
     if identity_path.exists() and previous.get("config") != config:
         raise RuntimeError(
             "Placement changed within a service session; restart required"
@@ -211,9 +235,16 @@ def audit(api: int, identity_path: Path, bind: bool) -> dict[str, object]:
         actual_start = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[19])
         if actual_start != identity["starts"][value]:
             raise RuntimeError("PID reused before affinity operation")
-        expected = cpu_list(
-            os.environ["WORKER_CPUS" if pid == worker else "SERVICE_CPUS"]
+        role = (
+            "WORKER_CPUS"
+            if pid == worker
+            else "API_CPUS"
+            if pid == identity["api"]
+            else "ENGINE_CPUS"
+            if pid == identity["engine"]
+            else "SERVICE_CPUS"
         )
+        expected = cpu_list(config[role])
         tids = list(Path(f"/proc/{pid}/task").glob("[0-9]*"))
         if not tids:
             raise RuntimeError(f"No threads for service PID {pid}")

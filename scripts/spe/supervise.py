@@ -245,6 +245,8 @@ def source_identity(args: argparse.Namespace, container: dict) -> dict:
     paths += sorted((args.project / "scripts").rglob("*.sh"))
     paths += sorted((args.project / "scripts").rglob("*.json"))
     paths += sorted((args.project / "scripts").rglob("*.c"))
+    if (args.project / "scripts/thp_exec").is_file():
+        paths.append(args.project / "scripts/thp_exec")
     if args.pages:
         paths += [
             args.project / "scripts/pages" / name

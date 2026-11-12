@@ -1,0 +1,331 @@
+{
+  "groups": [
+    {
+      "name": "slots",
+      "suffix": "SLOTS",
+      "events": [
+        "0x76",
+        "0x1000001a0",
+        "0x100001ea0",
+        "0x1000060a0",
+        "0x7aa"
+      ],
+      "event_headers": [
+        "0x76 (cycles)",
+        "0x1000001a0 (frontend slots)",
+        "0x100001ea0 (backend slots)",
+        "0x1000060a0 (SMT contention slots)",
+        "0x7aa (dispatched ops)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "retiring",
+      "suffix": "RETIRING",
+      "events": [
+        "0x76",
+        "0x7aa",
+        "0xc1",
+        "0x1000000c2",
+        "0xc0"
+      ],
+      "event_headers": [
+        "0x76 (cycles)",
+        "0x7aa (dispatched ops)",
+        "0xc1 (retired ops)",
+        "0x1000000c2 (microcode ops)",
+        "0xc0 (instructions)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "frontend",
+      "suffix": "FRONTEND",
+      "events": [
+        "0x76",
+        "0x1000001a0",
+        "0x1060001a0"
+      ],
+      "event_headers": [
+        "0x76 (cycles)",
+        "0x1000001a0 (frontend slots)",
+        "0x1060001a0 (frontend cmask=6)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "backend",
+      "suffix": "BACKEND",
+      "events": [
+        "0x76",
+        "0x100001ea0",
+        "0xa2d6",
+        "0x2d6"
+      ],
+      "event_headers": [
+        "0x76 (cycles)",
+        "0x100001ea0 (backend slots)",
+        "0xa2d6 (load not complete)",
+        "0x2d6 (not complete)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "speculation",
+      "suffix": "SPECULATION",
+      "events": [
+        "0x76",
+        "0x7aa",
+        "0xc1",
+        "0xc3",
+        "0x96"
+      ],
+      "event_headers": [
+        "0x76 (cycles)",
+        "0x7aa (dispatched ops)",
+        "0xc1 (retired ops)",
+        "0xc3 (branch mispredicts)",
+        "0x96 (resyncs)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "l2_ratio",
+      "suffix": "L2_RATIO",
+      "events": [
+        "0xf960",
+        "0xff70",
+        "0xff71",
+        "0xff72",
+        "0x964"
+      ],
+      "event_headers": [
+        "0xf960 (L2 no-prefetch requests)",
+        "0xff70 (prefetch L2 hit)",
+        "0xff71 (prefetch L2 miss, L3 hit)",
+        "0xff72 (prefetch L2 and L3 miss)",
+        "0x964 (I/D L2 miss)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "l2_mpki",
+      "suffix": "L2_MPKI",
+      "events": [
+        "0xc0",
+        "0x964",
+        "0xff71",
+        "0xff72"
+      ],
+      "event_headers": [
+        "0xc0 (instructions)",
+        "0x964 (I/D L2 miss)",
+        "0xff71 (prefetch L2 miss, L3 hit)",
+        "0xff72 (prefetch L2 and L3 miss)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "branch",
+      "suffix": "BRANCH",
+      "events": [
+        "0x76",
+        "0xc0",
+        "0xc2",
+        "0xc3"
+      ],
+      "event_headers": [
+        "0x76 (cycles)",
+        "0xc0 (instructions)",
+        "0xc2 (retired branches)",
+        "0xc3 (retired mispredicted branches)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "common_icache",
+      "suffix": "ICACHE",
+      "events": [
+        "0xc0",
+        "0x10000188e",
+        "0x100001f8e",
+        "0x164",
+        "0x764"
+      ],
+      "event_headers": [
+        "0xc0 (instructions)",
+        "0x10000188e (L1I misses)",
+        "0x100001f8e (L1I accesses)",
+        "0x164 (L2I misses)",
+        "0x764 (L2I accesses)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "common_dcache",
+      "suffix": "DCACHE",
+      "events": [
+        "0xc0",
+        "0xff43",
+        "0x729",
+        "0x864",
+        "0xf864"
+      ],
+      "event_headers": [
+        "0xc0 (instructions)",
+        "0xff43 (L1D misses)",
+        "0x729 (memory operations)",
+        "0x864 (L2D misses)",
+        "0xf864 (L2D requests)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "common_itlb",
+      "suffix": "ITLB",
+      "events": [
+        "0xc0",
+        "0x84",
+        "0xf85",
+        "0x794"
+      ],
+      "event_headers": [
+        "0xc0 (instructions)",
+        "0x84 (ITLB L2 hits)",
+        "0xf85 (ITLB L2 misses)",
+        "0x794 (ITLB L1 hits)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "common_dtlb",
+      "suffix": "DTLB",
+      "events": [
+        "0xc0",
+        "0xff45",
+        "0xf045",
+        "0x729"
+      ],
+      "event_headers": [
+        "0xc0 (instructions)",
+        "0xff45 (L1 DTLB misses)",
+        "0xf045 (DTLB walks)",
+        "0x729 (memory operations)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "common_l2tlb",
+      "suffix": "STLB",
+      "events": [
+        "0xc0",
+        "0x84",
+        "0xf85",
+        "0xff45",
+        "0xf045"
+      ],
+      "event_headers": [
+        "0xc0 (instructions)",
+        "0x84 (ITLB L2 hits)",
+        "0xf85 (ITLB L2 misses)",
+        "0xff45 (DTLB L1 misses)",
+        "0xf045 (DTLB L2 misses)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "common_branch",
+      "suffix": "BR_DETAIL",
+      "events": [
+        "0xc0",
+        "0xc3",
+        "0xc9",
+        "0xca"
+      ],
+      "event_headers": [
+        "0xc0 (instructions)",
+        "0xc3 (branch misses)",
+        "0xc9 (return misses)",
+        "0xca (indirect misses)"
+      ],
+      "derived": []
+    }
+  ],
+  "summary_metrics": [
+    "CPU利用率",
+    "频率(MHz)",
+    "time(us)",
+    "cycles",
+    "cycle占比",
+    "instructions",
+    "IPC",
+    "Retire",
+    "Retiring Fastpath",
+    "Retiring Microcode",
+    "FrontendBound",
+    "Fetch Latency Bound",
+    "Fetch Bandwidth Bound",
+    "BadSpec",
+    "BadSpec Mispredict (estimate)",
+    "Indirect Branch",
+    "Pop Branch",
+    "BadSpec Restart (estimate)",
+    "BackendBound",
+    "Backend CPU (estimate)",
+    "Resource Bound",
+    "Exe Ports Util",
+    "Backend Memory (estimate)",
+    "L1 Bound",
+    "L2 Bound",
+    "L3或DRAM等待",
+    "Store Bound",
+    "SMTContention",
+    "br missrate",
+    "br mpki",
+    "L2 I+D+prefetch access/call",
+    "L2 I+D+prefetch miss/call",
+    "L2 I+D+prefetch missrate",
+    "L2 I+D+prefetch mpki",
+    "l1i missrate",
+    "l1i mpki",
+    "l2i missrate",
+    "l2i mpki",
+    "l1d missrate",
+    "l1d mpki",
+    "L2d missrate",
+    "L2d mpki",
+    "itlb missrate",
+    "itlb mpki",
+    "dtlb missrate",
+    "dtlb mpki",
+    "stlb missrate",
+    "stlb mpki",
+    "DTLB Walk（计数/调用）",
+    "Mem Access（计数/调用）",
+    "L3 missrate（共享范围）",
+    "L3 mpki（共享范围）"
+  ],
+  "summary_levels": {
+    "Retire": 1,
+    "Retiring Fastpath": 2,
+    "Retiring Microcode": 2,
+    "FrontendBound": 1,
+    "Fetch Latency Bound": 2,
+    "Fetch Bandwidth Bound": 2,
+    "BadSpec": 1,
+    "BadSpec Mispredict (estimate)": 2,
+    "Indirect Branch": 3,
+    "Pop Branch": 3,
+    "BadSpec Restart (estimate)": 2,
+    "BackendBound": 1,
+    "Backend CPU (estimate)": 2,
+    "Backend Memory (estimate)": 2,
+    "Resource Bound": 3,
+    "Exe Ports Util": 3,
+    "L1 Bound": 3,
+    "L2 Bound": 3,
+    "L3或DRAM等待": 3,
+    "Store Bound": 3,
+    "SMTContention": 1
+  }
+}

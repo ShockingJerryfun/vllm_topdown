@@ -55,6 +55,7 @@ def parse_args() -> argparse.Namespace:
         default="pipeline",
     )
     parser.add_argument("--expected-calls", type=int, required=True)
+    parser.add_argument("--require-unmultiplexed", action="store_true")
     return parser.parse_args()
 
 
@@ -223,6 +224,7 @@ def write_csvs(
     mode: str,
     profile: str = "pipeline",
     qualifier_calls: list[int] | None = None,
+    require_unmultiplexed: bool = False,
 ) -> None:
     raw_dir = run_dir / "raw"
     parsed_dir = run_dir / "parsed"
@@ -256,7 +258,18 @@ def write_csvs(
                 writer = csv.DictWriter(handle, fieldnames=headers)
                 writer.writeheader()
                 writer.writerows(output_rows)
-        valid_count = sum(int(row["valid"]) == 1 for row in selected)
+        valid_count = sum(
+            int(row["valid"]) == 1
+            and (
+                mode != "pmu"
+                or not require_unmultiplexed
+                or (
+                    int(row["time_running"]) > 0
+                    and int(row["time_running"]) == int(row["time_enabled"])
+                )
+            )
+            for row in selected
+        )
         invalid_count = len(selected) - valid_count
         quality.append(
             [
@@ -323,6 +336,7 @@ def main() -> int:
         args.mode,
         args.profile,
         qualifier_calls,
+        args.require_unmultiplexed,
     )
     LOGGER.info("row counts: %s", {stage: len(rows[stage]) for stage in stages})
     return 0

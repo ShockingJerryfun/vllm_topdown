@@ -20,6 +20,7 @@ from zipfile import ZipFile
 import regex as re
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import Cell
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -147,6 +148,27 @@ SUMMARY_LEVELS = {
     "L3 Bound": 3,
     "Mem Bound": 3,
     "Store Bound": 3,
+    "L3或DRAM等待": 3,
+    **dict.fromkeys(
+        (
+            "0 Ports Serialize",
+            "0 Ports Non Serialize",
+            "1 Ports",
+            "2 Ports",
+            "3 Ports",
+            "4 Ports",
+            "5 Ports",
+            "6P Ports",
+            "L1 DTLB",
+            "L1 Misalign",
+            "L1 Resource full",
+            "L1 Instruction type",
+            "L1 Forward hazard",
+            "L1 Structure hazard",
+            "L1 Pipeline",
+        ),
+        4,
+    ),
 }
 SUMMARY_GROUP_STARTS = {
     "CPU利用率",
@@ -526,7 +548,9 @@ def size_detail_sheet(worksheet: Worksheet, last_column: int) -> None:
     worksheet.sheet_view.showGridLines = False
 
 
-def normalize_summary_rows(rows: list[list[str]]) -> list[list[str]]:
+def normalize_summary_rows(
+    rows: list[list[str]], expected: tuple[str, ...] = SUMMARY_METRICS
+) -> list[list[str]]:
     if not rows:
         raise ValueError("summary.csv is empty")
     width = max(len(row) for row in rows)
@@ -536,7 +560,7 @@ def normalize_summary_rows(rows: list[list[str]]) -> list[list[str]]:
         for row in normalized[1:]
         if row[0] and row[0] not in {"热点函数", "热点函数占比："}
     ]
-    if labels != list(SUMMARY_METRICS):
+    if labels != list(expected):
         raise ValueError("summary metrics do not match the 920b template")
 
     hotspot_index = next(
@@ -566,7 +590,9 @@ def summary_value(value: str) -> tuple[object, str]:
 
 
 def read_frequency_benchmark(run_root: Path) -> list[tuple[str, str]]:
-    path = run_root / "frequency" / "benchmark.log"
+    path = run_root / "benchmark_after" / "benchmark.log"
+    if not path.is_file():
+        path = run_root / "frequency" / "benchmark.log"
     if not path.is_file():
         return []
 
@@ -596,20 +622,27 @@ def benchmark_value(value: str) -> tuple[int | float, str]:
     return float(value), "0.00"
 
 
-def summary_display_label(metric: str) -> str:
-    level = SUMMARY_LEVELS.get(metric)
+def summary_display_label(metric: str, levels: dict[str, int] | None = None) -> str:
+    if levels is not None and metric == "频率(MHz)":
+        return "PMU窗口频率估算(MHz)"
+    level = (levels or SUMMARY_LEVELS).get(metric)
     if metric == "cycle占比" or level is None or level == 1:
         return metric
     return f"{'--' * (level - 1)} {metric}"
 
 
-def style_summary_row(cell: Cell, metric: str, column_index: int) -> None:
+def style_summary_row(
+    cell: Cell,
+    metric: str,
+    column_index: int,
+    levels: dict[str, int] | None = None,
+) -> None:
     if not metric:
         cell.font = Font(name="Carlito", size=11)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         return
 
-    level = SUMMARY_LEVELS.get(metric)
+    level = (levels or SUMMARY_LEVELS).get(metric)
     group_start = metric in SUMMARY_GROUP_STARTS
     cell.border = SUMMARY_SECTION_BORDER if group_start else BODY_BORDER
     cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -645,15 +678,20 @@ def style_summary_row(cell: Cell, metric: str, column_index: int) -> None:
         cell.font = Font(name="Carlito", size=11)
 
 
-def write_summary(worksheet: Worksheet, run_root: Path) -> None:
-    rows = normalize_summary_rows(read_matrix(run_root / "summary.csv"))
+def write_summary(
+    worksheet: Worksheet,
+    run_root: Path,
+    expected: tuple[str, ...] = SUMMARY_METRICS,
+    levels: dict[str, int] | None = None,
+) -> None:
+    rows = normalize_summary_rows(read_matrix(run_root / "summary.csv"), expected)
     benchmark_rows = read_frequency_benchmark(run_root)
     width = len(rows[0])
     for row_index, row in enumerate(rows, 1):
         for column_index, raw_value in enumerate(row, 1):
             value, number_format = summary_value(raw_value)
             if row_index > 1 and column_index == 1:
-                value = summary_display_label(row[0]) or None
+                value = summary_display_label(row[0], levels) or None
             cell = worksheet.cell(row_index, column_index, value)
             cell.alignment = Alignment(horizontal="center", vertical="center")
             if row_index == 1:
@@ -661,8 +699,31 @@ def write_summary(worksheet: Worksheet, run_root: Path) -> None:
                 cell.fill = PatternFill("solid", fgColor=HEADER_FILL)
                 cell.border = HEADER_BORDER
             else:
-                style_summary_row(cell, row[0], column_index)
+                style_summary_row(cell, row[0], column_index, levels)
                 cell.number_format = number_format
+                if levels is not None and column_index == 1:
+                    if row[0] == "频率(MHz)":
+                        cell.comment = Comment(
+                            "同一 retiring 组的有效 cycles 与运行时间估算；"
+                            "含部分打桩开销。",
+                            "Topdown",
+                        )
+                    elif "(estimate)" in row[0]:
+                        cell.comment = Comment(
+                            "同组计数估算；与父项来自不同轮次，可能不闭合。",
+                            "Topdown",
+                        )
+                    elif row[0].startswith("L2 I+D+prefetch"):
+                        cell.comment = Comment(
+                            "包含指令、数据请求和指定硬件预取，不是纯 L2D 口径。",
+                            "Topdown",
+                        )
+                    elif row[0].startswith("L3 "):
+                        cell.comment = Comment(
+                            "L3 为筛选 CPU 上的共享域计数，可能包含其他活动；"
+                            "每千指令比值的分母为 Worker 执行线程指令数。",
+                            "Topdown",
+                        )
         if row_index > 1:
             worksheet.row_dimensions[row_index].height = 21
 
@@ -720,7 +781,7 @@ def write_summary(worksheet: Worksheet, run_root: Path) -> None:
     worksheet.row_dimensions[1].height = 24
     benchmark_labels = [label for label, _value in display_rows]
     max_label = max(
-        *(len(summary_display_label(str(row[0]))) for row in rows if row),
+        *(len(summary_display_label(str(row[0]), levels)) for row in rows if row),
         *(len(label) for label in benchmark_labels),
         len("Benchmark"),
     )
@@ -917,7 +978,26 @@ def build_workbook(args: argparse.Namespace, groups: tuple[GroupSpec, ...]) -> P
     workbook.remove(workbook.active)
     summary = workbook.create_sheet("汇总")
     hotspot = workbook.create_sheet("热点函数")
-    write_summary(summary, args.run_root)
+    expected = SUMMARY_METRICS
+    marker = args.run_root / "pmu_groups.txt"
+    levels = None
+    if args.chip == "zen4":
+        config = json.loads(args.config.read_text(encoding="utf-8"))
+        expected = tuple(config["summary_metrics"])
+        levels = config["summary_levels"]
+    elif (
+        args.chip == "920b"
+        and marker.is_file()
+        and marker.read_text().strip() == "extended"
+    ):
+        config = json.loads(args.config.read_text(encoding="utf-8"))
+        expected = tuple(config["summary_metrics"])
+    write_summary(summary, args.run_root, expected, levels)
+    if levels is not None:
+        summary.cell(1, 1).comment = Comment(
+            "Zen 4 各 PMU 组独立采集，父子项可能不闭合；SMT 竞争单列。",
+            "Topdown",
+        )
     write_hotspot(hotspot, args.run_root)
 
     compact = getattr(args, "compact_report", False)

@@ -4,6 +4,11 @@ PLACEMENT_MODE=${PLACEMENT_MODE:-legacy}
 SERVER_PREFIX=()
 CLIENT_PREFIX=()
 BINDING_ARGS=()
+case "${ANON_THP_MODE:-default}" in
+    default|on) ;;
+    off) SERVER_PREFIX=("$SCRIPT_DIR/thp_exec") ;;
+    *) printf 'Invalid ANON_THP_MODE=%s\n' "$ANON_THP_MODE" >&2; exit 2 ;;
+esac
 if [[ "$PLACEMENT_MODE" == worker_set ]]; then
     [[ "$TENSOR_PARALLEL_SIZE" == 1 && "$DATA_PARALLEL_SIZE" == 1 ]] || {
         printf 'Explicit placement currently requires TP=DP=1\n' >&2; exit 2;

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -360,10 +361,14 @@ def stage_metrics(root: Path, stage: str) -> dict[str, float | None]:
     }
 
 
-def format_value(metric: str, value: float | None) -> str:
+def format_value(
+    metric: str,
+    value: float | None,
+    percent_metrics: set[str] = PERCENT_METRICS,
+) -> str:
     if value is None:
         return "未采集"
-    if metric in PERCENT_METRICS:
+    if metric in percent_metrics:
         return f"{value:.2%}"
     return f"{value:.2f}"
 
@@ -404,6 +409,13 @@ def write_quality(root: Path) -> None:
             (root, ""),
             (root / "end_to_end", "end_to_end/"),
         )
+        marker = root / "pmu_groups.txt"
+        groups = GROUPS
+        if marker.is_file() and marker.read_text().strip() == "extended":
+            config = json.loads(
+                Path(__file__).with_name("report_config_extended.json").read_text()
+            )
+            groups = ("time", *(group["name"] for group in config["groups"]))
         for source_root, prefix in quality_roots:
             if (
                 not prefix
@@ -411,7 +423,7 @@ def write_quality(root: Path) -> None:
                 and (root / "collection_profile").read_text().strip() == "end_to_end"
             ):
                 continue
-            for group in GROUPS:
+            for group in groups:
                 with (source_root / group / "collection_quality.csv").open(
                     newline="", encoding="utf-8-sig"
                 ) as source:
@@ -423,8 +435,18 @@ def write_quality(root: Path) -> None:
 
 def main() -> int:
     args = parse_args()
-    values = {stage: stage_metrics(args.run_root, stage) for stage in STAGES}
-    values[END_TO_END_STAGE] = stage_metrics(
+    marker = args.run_root / "pmu_groups.txt"
+    calculate = stage_metrics
+    percent_metrics = PERCENT_METRICS
+    if marker.is_file() and marker.read_text().strip() == "extended":
+        if __package__:
+            from . import metrics_extended
+        else:
+            import metrics_extended
+        calculate = metrics_extended.stage_metrics
+        percent_metrics = metrics_extended.PERCENT_METRICS
+    values = {stage: calculate(args.run_root, stage) for stage in STAGES}
+    values[END_TO_END_STAGE] = calculate(
         args.run_root / "end_to_end",
         END_TO_END_STAGE,
     )
@@ -439,7 +461,7 @@ def main() -> int:
                 [
                     metric,
                     *(
-                        format_value(metric, values[stage][metric])
+                        format_value(metric, values[stage][metric], percent_metrics)
                         for stage in REPORT_STAGES
                     ),
                 ]

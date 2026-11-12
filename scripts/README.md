@@ -1,11 +1,12 @@
 # Topdown 与 SPE 采集
 
-本说明对应 GitHub 仓库 `ShockingJerryfun/vllm_topdown` 的
-**`topdown-persistent`** 分支。首次获取请使用新的目录：
+多平台部署与基线采集以 [环境部署与测试指南](../docs/topdown/00_部署与测试.md) 为准。下方带 84 旧路径的示例属于历史 SPE 和专项对照，需要按实际环境适配，不能直接作为基线入口。
+
+本说明对应 GitCode 仓库 `fangjin888/vllm_topdown` 的
+**`main`** 分支。首次获取请使用新的目录：
 
 ```bash
-git clone --branch topdown-persistent --single-branch \
-  https://github.com/ShockingJerryfun/vllm_topdown.git vllm_topdown_persistent
+git clone https://gitcode.com/fangjin888/vllm_topdown.git vllm_topdown_persistent
 cd vllm_topdown_persistent
 ```
 
@@ -17,13 +18,13 @@ bash scripts/run_topdown.sh /absolute/path/config.env /absolute/path/new_result
 
 配置与结果路径按实际机器填写，结果目录须为新目录；下文的 84 路径仅为示例。
 
-统一入口 `scripts/run_topdown.sh [配置绝对路径 [结果目录]]` 完成函数阶段、端到端 time/PMU、hotspot 和 SPE，生成同一份 Excel。对明确设置 Worker 绑核的 920b/950 配置，`SPE_ENABLE=auto` 自动启用 SPE；显式 `SPE_ENABLE=0` 可关闭。其他芯片或未配置绑核时保留原 Topdown 流程，海光不运行 Arm SPE。
+统一入口 `scripts/run_topdown.sh [配置绝对路径 [结果目录]]` 按 `CHIP` 选择平台模板并生成同一格式的 Excel；920B、950 和 Zen 4 支持父阶段与八阶段，当前海光标准入口支持八阶段。对明确设置 Worker 绑核的 920b/950 配置，`SPE_ENABLE=auto` 自动启用 SPE；显式 `SPE_ENABLE=0` 可关闭。海光和 Zen 4 不运行 Arm SPE。
 
 启用 SPE 时需在配置中提供 `HOST_PYTHON`、`SUBREAPER_BIN`、`EXPERIMENT_LOCK`、`SPE_BINARY_CACHE` 及 Worker/服务/客户端绑定。主入口复用现有监督器，在完整 Topdown 后独立采集 3 次正式请求的 SPE，使用原生快速解析；选中样本回放核对通过后删除该次临时全量 perf 数据，只保留筛选结果、必要二进制及校验证据。不会删除历史数据。Excel 输出 Topdown、Hotspot、SPE 三页，完整明细导出 CSV；Topdown 汇总样式保持。
 
-`scripts/run_experiment.sh` 是单个条件的一键入口：time、13组PMU、独立SPE、原始记录校验、原样式Excel及资源清理。`scripts/sweep.py` 在已验证的页条件上安排核数与单因素对照。两个入口均在84宿主机执行，推理使用已检查的自有容器。
+`scripts/run_experiment.sh` 用于需要独立 SPE 或页面监督的条件，采集范围由配置选择；`scripts/sweep.py` 用于已准备好页条件的专项对照。普通 Topdown 基线使用上面的统一入口，显式设置 `SPE_ENABLE=0`。
 
-`HOST_PYTHON` 指向任务自己的宿主机虚拟环境，须具备 `openpyxl` 和 `regex`；容器内的报表依赖不能代替宿主机比较入口的依赖。84任务环境已按实际容器的 `regex` 版本验证，安装来源和校验值保存在任务证据目录。
+`HOST_PYTHON` 指向任务自己的宿主机虚拟环境，须具备 `openpyxl` 和 `regex`；容器内的报表依赖不能代替宿主机比较入口的依赖。84 任务环境的依赖版本记录在任务证据目录。
 
 ## 单个条件
 
@@ -63,7 +64,7 @@ Excel保留Topdown汇总样式，输出Topdown、Hotspot、SPE三页，明细存
 
 全矩阵完成后，`output_dir/Topdown_对比.xlsx` 保留的基线结果页只来自一次运行：比较阶段的常驻脚本、选定核数、64KB近端基线第1次运行，不是三次平均，也不是所有条件合并。新增“逐次对比”“重复汇总”用于跨运行比较；“报告索引”明确标出唯一的原表来源，并列出各运行的条件、重复序号和比较阶段。
 
-每个物理运行自己的结果报告按原字节复制到主工作簿旁的 `reports/<运行ID>.xlsx`，索引使用可移植的相对链接。同次基线用于多个比较阶段时只复制一次。请将主工作簿与整个 `reports/` 目录一起移动或交付。`comparison.json` 的 `report_bundle` 保存逐次文件SHA、相对路径和来源标记，路径基准为主工作簿所在目录；原始报告不修改。运行ID不安全、重名、同一运行身份冲突或已有副本内容不一致时停止发布。
+每个物理运行自己的结果报告按原字节复制到主工作簿旁的 `reports/<运行ID>.xlsx`，索引使用可移植的相对链接。同次基线用于多个比较阶段时只复制一次。请将主工作簿与整个 `reports/` 目录一起移动或交付。`comparison.json` 的 `report_bundle` 保存逐次文件身份、相对路径和来源标记，路径基准为主工作簿所在目录；原始报告不修改。运行ID不安全、重名、同一运行身份冲突或已有副本内容不一致时停止发布。
 
 独立 `compare.py --baseline-run ... --workbook-output ...` 使用同样的索引与打包规则，原表来源由显式参数指定，按传入清单汇总。带有 `sweep` 元数据的正式发布必须全矩阵完成；阶段未完成时仅保存工作区汇总，不发布最终工作簿。
 
@@ -72,7 +73,7 @@ Excel保留Topdown汇总样式，输出Topdown、Hotspot、SPE三页，明细存
 各芯片入口使用 `--compact-report`：最终 Excel 保留 `Topdown`、`Hotspot`；
 启用 SPE 时再加入 `SPE`。Topdown 保持原汇总布局，热点按函数表格展示。
 `details/topdown/` 按原相对路径保存各组原始、解析、质量及汇总 CSV，
-`details/index.json` 记录来源和 SHA256。原始文件仍保留。
+`details/index.json` 记录明细与原始来源的对应关系。原始文件仍保留。
 `details/hotspot.csv` 保存完整热点列表；
 `details/spe_samples.csv`、`details/spe_instructions.csv` 保存完整 SPE 明细。
 SPE 页通过代码库、ELF PC 和运行时 PC 对照明细，完整 `pc_key` 仅留在 CSV 中，样本占比以筛选后总样本为分母；

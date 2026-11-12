@@ -14,9 +14,20 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("chip", ["920b", "950"])
-@pytest.mark.parametrize("profile,rounds", [("full", 29), ("end_to_end", 14)])
-def test_chip_runner_selects_exact_rounds(tmp_path, chip, profile, rounds):
+@pytest.mark.parametrize(
+    "chip,profile,group_set,rounds,e2e_rounds",
+    [
+        ("920b", "full", "standard", 29, 14),
+        ("920b", "end_to_end", "standard", 14, 14),
+        ("950", "full", "standard", 29, 14),
+        ("950", "end_to_end", "standard", 14, 14),
+        ("920b", "full", "extended", 49, 23),
+        ("920b", "end_to_end", "extended", 25, 23),
+    ],
+)
+def test_chip_runner_selects_exact_rounds(
+    tmp_path, chip, profile, group_set, rounds, e2e_rounds
+):
     scripts = tmp_path / "scripts"
     (scripts / chip).mkdir(parents=True)
     (tmp_path / "vllm").mkdir()
@@ -37,10 +48,12 @@ def test_chip_runner_selects_exact_rounds(tmp_path, chip, profile, rounds):
         f"#!{sys.executable}\nimport pathlib,sys\npathlib.Path(sys.argv[-1]).mkdir()\n"
     )
     cp.chmod(0o755)
-    for name in ("lscpu", "cat"):
-        stub = tools / name
-        stub.write_text("#!/bin/sh\nexit 0\n")
-        stub.chmod(0o755)
+    stub = tools / "lscpu"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    stub = tools / "cat"
+    stub.write_text('#!/bin/sh\nif [ "$#" -eq 0 ]; then exec /bin/cat; fi\n')
+    stub.chmod(0o755)
     record = tmp_path / "rounds"
     config = (ROOT / "scripts/config.env").read_text()
     config += (
@@ -65,6 +78,7 @@ printf '%s|%s|%s|%s\\n' "$1" "${KPERF_TARGET:-}" "${KPERF_QUALIFIER:-}" \\
         "RUN_ROOT": str(results),
         "ROUND_RECORD": str(record),
         "COLLECTION_PROFILE": profile,
+        "GROUP_SET_920B": group_set,
     }
     output = subprocess.run(
         ["bash", str(scripts / chip / "run.sh")],
@@ -77,14 +91,17 @@ printf '%s|%s|%s|%s\\n' "$1" "${KPERF_TARGET:-}" "${KPERF_QUALIFIER:-}" \\
     rows = [row.split("|") for row in record.read_text().splitlines()]
     assert len(rows) == rounds
     e2e = [row for row in rows if row[1] == "execute_model_to_sample_tokens"]
-    assert len(e2e) == 14
+    assert len(e2e) == e2e_rounds
     assert all(
         row[2] == "run_fullgraph" and row[3].endswith("/end_to_end") for row in e2e
     )
     assert e2e[0][0] == "time"
-    assert len({row[0] for row in e2e}) == 14
+    assert len({row[0] for row in e2e}) == e2e_rounds
     assert (results / "collection_profile").read_text().strip() == profile
-    if profile == "end_to_end":
+    if group_set == "extended":
+        assert rows[0][0] == "benchmark_before"
+        assert rows[-1][0] == "benchmark_after"
+    elif profile == "end_to_end":
         assert rows == e2e
     else:
         assert rows[-1][0] == "hotspot"

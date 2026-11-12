@@ -10,6 +10,25 @@ source "$COMMON_DIR/config.env"
 set +a
 COLLECTION_PROFILE=${COLLECTION_PROFILE:-full}
 case "$COLLECTION_PROFILE" in full|end_to_end) ;; *) exit 2 ;; esac
+GROUP_SET_920B=${GROUP_SET_920B:-standard}
+case "$GROUP_SET_920B" in standard|extended) ;; *) exit 2 ;; esac
+EXTRA_GROUPS=""
+REPORT_CONFIG="$SCRIPT_DIR/report_config.json"
+if [[ "$GROUP_SET_920B" == extended ]]; then
+    EXTRA_GROUPS=$(cat <<EOF
+l1_detail_a|$EVENTS_920B_L1_DETAIL_A
+l1_detail_b|$EVENTS_920B_L1_DETAIL_B
+ports_a|$EVENTS_920B_PORTS_A
+ports_b|$EVENTS_920B_PORTS_B
+cache|$EVENTS_920B_CACHE
+trans|$EVENTS_920B_TRANS
+levels|$EVENTS_920B_LEVELS
+l2_lsu_ifu|$EVENTS_920B_L2_LSU_IFU
+l2_mmu_device|$EVENTS_920B_L2_MMU_DEVICE
+EOF
+    )
+    REPORT_CONFIG="$SCRIPT_DIR/report_config_extended.json"
+fi
 RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/920b}
 "$PYTHON_BIN" -c 'import openpyxl' >/dev/null 2>&1 || {
     printf 'Missing openpyxl; install scripts/requirements-report.txt\n' >&2
@@ -17,6 +36,7 @@ RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/920b}
 }
 [[ ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
 install -d -m 755 "$RUN_ROOT"
+printf '%s\n' "$GROUP_SET_920B" > "$RUN_ROOT/pmu_groups.txt"
 : > "$RUN_ROOT/commands.txt"
 
 record_command() {
@@ -68,6 +88,9 @@ start_session
 END_TO_END_STAGE=execute_model_to_sample_tokens
 END_TO_END_ROOT="$RUN_ROOT/end_to_end"
 
+if [[ "$GROUP_SET_920B" == extended ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" benchmark_before
+fi
 if [[ "$COLLECTION_PROFILE" == full ]]; then
 RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
 PARSE_COMMAND=(
@@ -79,6 +102,7 @@ record_command "time parse" "" 0 0 "${PARSE_COMMAND[@]}"
 "${PARSE_COMMAND[@]}"
 
 while IFS='|' read -r label codes; do
+    [[ -n "$label" ]] || continue
     RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
     PARSE_COMMAND=(
         "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label"
@@ -101,6 +125,7 @@ tlb2|$EVENTS_920B_TLB2
 branch|$EVENTS_920B_BRANCH
 imix|$EVENTS_920B_IMIX
 imix2|$EVENTS_920B_IMIX2
+$EXTRA_GROUPS
 EOF
 
 fi
@@ -120,6 +145,7 @@ record_command "end-to-end time parse" "" 0 0 "${PARSE_COMMAND[@]}"
 "${PARSE_COMMAND[@]}"
 
 while IFS='|' read -r label codes; do
+    [[ -n "$label" ]] || continue
     KPERF_TARGET="$END_TO_END_STAGE" KPERF_QUALIFIER=run_fullgraph \
         RUN_ROOT="$END_TO_END_ROOT" \
         "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
@@ -145,6 +171,7 @@ tlb2|$EVENTS_920B_TLB2
 branch|$EVENTS_920B_BRANCH
 imix|$EVENTS_920B_IMIX
 imix2|$EVENTS_920B_IMIX2
+$EXTRA_GROUPS
 EOF
 
 if [[ "$COLLECTION_PROFILE" == full ]]; then
@@ -153,6 +180,9 @@ fi
 if [[ ${FREQUENCY_ENABLE:-0} == 1 ]]; then
     RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" frequency
 fi
+if [[ "$GROUP_SET_920B" == extended ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" benchmark_after
+fi
 stop_session
 SUMMARY_COMMAND=("$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT")
 record_command "summary" "" 0 0 "${SUMMARY_COMMAND[@]}"
@@ -160,7 +190,7 @@ record_command "summary" "" 0 0 "${SUMMARY_COMMAND[@]}"
 
 BUILD_COMMAND=(
     "$PYTHON_BIN" "$COMMON_DIR/build_xlsx.py" "$RUN_ROOT"
-    --config "$SCRIPT_DIR/report_config.json"
+    --config "$REPORT_CONFIG"
     --chip "$(basename "$SCRIPT_DIR")"
     --version "$VLLM_VERSION_SHORT"
     --model-short "$MODEL_SHORT"

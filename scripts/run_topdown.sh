@@ -11,8 +11,8 @@ set +a
 
 COLLECTION_PROFILE=${COLLECTION_PROFILE:-full}
 case "$COLLECTION_PROFILE" in full|end_to_end) ;; *) exit 2 ;; esac
-if [[ "$COLLECTION_PROFILE" == end_to_end && "$CHIP" != 920b && "$CHIP" != 950 ]]; then
-    printf 'end_to_end currently supports 920b and 950\n' >&2
+if [[ "$COLLECTION_PROFILE" == end_to_end && "$CHIP" != 920b && "$CHIP" != 950 && "$CHIP" != zen4 ]]; then
+    printf 'end_to_end currently supports 920b, 950 and zen4\n' >&2
     exit 2
 fi
 RUN_ID=$(date '+%Y%m%d_%H%M%S')

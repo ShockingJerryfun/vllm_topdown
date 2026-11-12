@@ -145,11 +145,12 @@ def open_group(
     pid: int,
     cpu: int,
     exclude_hv: bool,
+    events: list[int] | None = None,
 ) -> tuple[list[int], list[int]]:
     fds: list[int] = []
     ids: list[int] = []
     try:
-        for index, event in enumerate(EVENTS):
+        for index, event in enumerate(EVENTS if events is None else events):
             fd = open_event(
                 event,
                 event_type,
@@ -293,17 +294,33 @@ def init_pmu() -> None:
                 raise ValueError("uncore scope requires KPERF_PMU_NAME")
             pmu_root = Path("/sys/bus/event_source/devices") / PMU_NAME
             event_type = int((pmu_root / "type").read_text(encoding="ascii").strip())
-            cpus = parse_cpu_list((pmu_root / "cpumask").read_text(encoding="ascii"))
-            for cpu in cpus:
+            if PMU_NAME == "amd_l3" and os.getenv("KPERF_L3_FILTERED") == "1":
+                cpu = int(os.environ["KPERF_L3_CPU"])
+                if len(EVENTS) not in (3, 5) or EVENTS[-1] != 0xC0:
+                    raise ValueError("filtered L3 requires events and instructions")
                 COUNTER_GROUPS.append(
-                    open_group(
-                        event_type,
-                        pid=-1,
-                        cpu=cpu,
-                        exclude_hv=False,
-                    )
+                    open_group(event_type, -1, cpu, False, EVENTS[:-1])
                 )
-            scope_detail = f"uncore pmu={PMU_NAME} cpus={cpus}"
+                COUNTER_GROUPS.append(
+                    open_group(PERF_TYPE_RAW, 0, -1, True, EVENTS[-1:])
+                )
+                scope_detail = (
+                    f"filtered L3 pmu={PMU_NAME} cpu={cpu} plus thread instructions"
+                )
+            else:
+                cpus = parse_cpu_list(
+                    (pmu_root / "cpumask").read_text(encoding="ascii")
+                )
+                for cpu in cpus:
+                    COUNTER_GROUPS.append(
+                        open_group(
+                            event_type,
+                            pid=-1,
+                            cpu=cpu,
+                            exclude_hv=False,
+                        )
+                    )
+                scope_detail = f"uncore pmu={PMU_NAME} cpus={cpus}"
         else:
             raise ValueError(f"unsupported PMU scope={SCOPE}")
     except (OSError, ValueError) as error:
@@ -493,7 +510,12 @@ def kperf_finish(name: str) -> None:
             raise disable_error
         time_enabled = 0
         time_running = 0
-        counts = [0] * len(EVENTS)
+        mixed_l3 = (
+            SCOPE == "uncore"
+            and PMU_NAME == "amd_l3"
+            and os.getenv("KPERF_L3_FILTERED") == "1"
+        )
+        counts = [] if mixed_l3 else [0] * len(EVENTS)
         valid = 1
         for fds, ids in COUNTER_GROUPS:
             group_enabled, group_running, group_counts = read_group(fds, ids)
@@ -505,9 +527,15 @@ def kperf_finish(name: str) -> None:
             time_enabled += group_enabled
             time_running += group_running
             valid &= int(group_running > 0 and group_running == group_enabled)
-            counts = [
-                total + count for total, count in zip(counts, group_counts, strict=True)
-            ]
+            if mixed_l3:
+                counts.extend(group_counts)
+            else:
+                counts = [
+                    total + count
+                    for total, count in zip(counts, group_counts, strict=True)
+                ]
+        if len(counts) != len(EVENTS):
+            raise OSError(errno.EIO, "PMU group count length mismatch")
     except OSError as error:
         ACTIVE = False
         emit(f"[kperf] finish failed: stage={name} errno={error.errno}")

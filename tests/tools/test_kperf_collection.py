@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import csv
+import ctypes
 import importlib
 import json
 import struct
@@ -9,6 +10,7 @@ from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 from pytest import MonkeyPatch, approx, fixture, mark, raises
 
@@ -35,6 +37,74 @@ def test_group_reader_preserves_requested_event_order(
     monkeypatch.setattr(kperf_instrument.os, "read", lambda _fd, _size: payload)
 
     assert kperf_instrument.read_group([3, 4], [11, 22]) == (100, 100, [5, 7])
+
+
+def test_zen4_extended_event_reaches_perf_without_truncation(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def syscall(_number, attr_pointer, _pid, _cpu, _group, _flags):
+        attr = ctypes.cast(
+            attr_pointer, ctypes.POINTER(kperf_instrument.PerfEventAttr)
+        ).contents
+        captured["event"] = attr.config
+        return 7
+
+    monkeypatch.setattr(kperf_instrument, "LIBC", SimpleNamespace(syscall=syscall))
+    assert kperf_instrument.open_event(0x1060001A0, 4, 0, -1, -1, True, True) == 7
+    assert captured["event"] == 0x1060001A0
+
+
+def test_zen4_l3_keeps_shared_counts_and_thread_instructions_separate(
+    monkeypatch: MonkeyPatch, controlled_collector: None, tmp_path: Path
+) -> None:
+    root = tmp_path / "amd_l3"
+    root.mkdir()
+    (root / "type").write_text("13")
+    original_path = Path
+    monkeypatch.setattr(
+        kperf_instrument,
+        "Path",
+        lambda value: (
+            root
+            if str(value) == "/sys/bus/event_source/devices"
+            else original_path(value)
+        ),
+    )
+    # The PMU path is appended after resolving the event-source directory.
+    (root / "amd_l3").mkdir()
+    (root / "amd_l3/type").write_text("13")
+    monkeypatch.setenv("KPERF_L3_FILTERED", "1")
+    monkeypatch.setenv("KPERF_L3_CPU", "64")
+    opened: list[tuple[int, int, int, int, int, bool, bool]] = []
+
+    def open_event(event, event_type, pid, cpu, leader, is_leader, exclude_hv):
+        fd = len(opened) + 10
+        opened.append((event, event_type, pid, cpu, leader, is_leader, exclude_hv))
+        return fd
+
+    monkeypatch.setattr(kperf_instrument, "open_event", open_event)
+    monkeypatch.setattr(kperf_instrument, "event_id", lambda fd: fd + 100)
+    monkeypatch.setattr(kperf_instrument.fcntl, "ioctl", lambda *_args: 0)
+    monkeypatch.setattr(kperf_instrument.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        kperf_instrument,
+        "read_group",
+        lambda fds, _ids: (100, 100, [5, 2, 8, 3] if len(fds) == 4 else [90]),
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(kperf_instrument, "emit", messages.append)
+    codes = (
+        "0x10050000000ff04,0x100500000000104,0x10054000000ff04,0x100540000000104,0xc0"
+    )
+    names = "l3_access_0,l3_miss_0,l3_access_1,l3_miss_1,0xc0"
+    kperf_instrument.configure("pmu", codes, names, "uncore", "amd_l3")
+    assert all(item[1:4] == (13, -1, 64) for item in opened[:4])
+    assert opened[4][1:4] == (kperf_instrument.PERF_TYPE_RAW, 0, -1)
+    kperf_instrument.kperf_begin("sample")
+    kperf_instrument.kperf_finish("sample")
+    assert messages[-1] == "KPERF,sample,1,200,200,1,5,2,8,3,90"
 
 
 @fixture
@@ -950,3 +1020,113 @@ def test_arm_workbooks_generate_with_frontend_metrics_and_benchmark(
                 assert branch_detail["P2"].value == '=IFERROR(L2/M2,"")'
         finally:
             workbook.close()
+
+
+def test_920b_extended_report_preserves_group_values_and_benchmark(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    config_path = root / "scripts/920b/report_config_extended.json"
+    groups = build_xlsx.load_config(config_path)
+    assert len(groups) == 22
+    assert all(len(group.events) <= 6 for group in groups)
+    assert "0x816c" not in {event for group in groups for event in group.events}
+    env_text = (root / "scripts/config.env").read_text()
+    for group in groups:
+        assert f"EVENTS_920B_{group.name.upper()}={','.join(group.events)}" in env_text
+    summary = importlib.import_module("scripts.920b.summary")
+    for profile_root, stages in (
+        (tmp_path, summary.STAGES),
+        (tmp_path / "end_to_end", (summary.END_TO_END_STAGE,)),
+    ):
+        for group in ("time", *(item.name for item in groups)):
+            quality = [
+                {
+                    "stage": stage,
+                    "expected_selected": 1,
+                    "raw": 1,
+                    "selected": 1,
+                    "valid": 1,
+                    "invalid": 0,
+                    "status": "ok",
+                }
+                for stage in stages
+            ]
+            write_csv(profile_root / group / "collection_quality.csv", quality)
+        for stage in stages:
+            timing = {
+                "sequence": 1,
+                "global_call": 1,
+                "wall_time_us": 10,
+                "thread_cpu_time_us": 8,
+                "valid": 1,
+            }
+            write_csv(profile_root / "time/parsed" / f"{stage}.csv", [timing])
+            for group in groups:
+                values = {event: 10 for event in group.events}
+                values.update(
+                    {
+                        key: value
+                        for key, value in {
+                            "0x0011": 1000,
+                            "0x0008": 500,
+                            "0x7008": 80,
+                            "0x7009": 70,
+                            "0x5090": 100,
+                            "0x700b": 230,
+                            "0x6008": 100,
+                            "0x600b": 75,
+                        }.items()
+                        if key in values
+                    }
+                )
+                sample = {"valid": 1, **values}
+                write_csv(
+                    profile_root / group.name / "parsed" / f"{stage}.csv", [sample]
+                )
+    (tmp_path / "pmu_groups.txt").write_text("extended\n")
+    (tmp_path / "collection_profile").write_text("full\n")
+    hotspot = tmp_path / "hotspot/perf_report.txt"
+    hotspot.parent.mkdir()
+    hotspot.write_text("100.00% Worker lib.so [.] function\n")
+    benchmark = tmp_path / "benchmark_after/benchmark.log"
+    benchmark.parent.mkdir()
+    benchmark.write_text(
+        "========== Serving Benchmark Result ==========\n"
+        "Successful requests: 1\n" + "=" * 50 + "\n"
+    )
+    monkeypatch.setattr(summary, "parse_args", lambda: Namespace(run_root=tmp_path))
+    assert summary.main() == 0
+    with (tmp_path / "collection_quality.csv").open(encoding="utf-8-sig") as stream:
+        quality = list(csv.DictReader(stream))
+    assert len(quality) == 207
+    assert all(row["status"] == "ok" for row in quality)
+    args = Namespace(
+        run_root=tmp_path,
+        config=config_path,
+        chip="920b",
+        version="0.26",
+        model_short="qwen3",
+        input_len=7000,
+        output_len=100,
+        include_end_to_end=True,
+        compact_report=True,
+    )
+    output = build_xlsx.build_workbook(args, groups)
+    workbook = build_xlsx.load_workbook(output, data_only=True)
+    try:
+        sheet = workbook["Topdown"]
+        rows = {sheet.cell(row, 1).value: row for row in range(1, sheet.max_row + 1)}
+        for metric, expected in (
+            ("L1 DTLB", 0.10),
+            ("0 Ports Non Serialize", 0.23),
+            ("L3或DRAM等待", 0.08),
+            ("L2 LSU 命中率", 0.75),
+        ):
+            label = build_xlsx.summary_display_label(metric)
+            assert sheet.cell(rows[label], 2).value == approx(expected)
+            assert sheet.cell(rows[label], 3).value == approx(expected)
+        assert sheet.cell(rows["Successful requests"], 2).value == 1
+        assert "---- L3 Bound" not in rows
+    finally:
+        workbook.close()

@@ -7,6 +7,10 @@ page_snapshot() {
         return 2
     }
     local label=$1 worker identity page_dir="$RUN_DIR/pages" cohort="" directory=""
+    local last_group=imix2
+    if [[ ${CHIP:-} == 920b && ${GROUP_SET_920B:-standard} == extended ]]; then
+        last_group=l2_mmu_device
+    fi
     if [[ ${RESUME_COLLECTION:-0} != 1 && -n ${SESSION_DIR:-} && ${KPERF_TARGET:-} == execute_model_to_sample_tokens \
         && ${KPERF_QUALIFIER:-} == run_fullgraph && "$LABEL" != spe ]]; then
         [[ $(basename "$RUN_ROOT") == end_to_end ]] || return 2
@@ -23,7 +27,7 @@ page_snapshot() {
             > "$page_dir/reference.json"
         page_dir="$RUN_ROOT/pages"
         if [[ "$label" == before && "$LABEL" != time ]] \
-            || [[ "$label" == after && "$LABEL" != imix2 ]]; then
+            || [[ "$label" == after && "$LABEL" != "$last_group" ]]; then
             return 0
         fi
     fi

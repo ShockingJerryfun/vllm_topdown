@@ -21,6 +21,20 @@ def test_service_can_remain_on_other_node(linux, monkeypatch):
     assert placement.validate_config()["node"] == 0
 
 
+def test_zen4_worker_pool_uses_shared_l3_topology(linux, monkeypatch):
+    write, _, _ = linux
+    monkeypatch.setenv("CHIP", "zen4")
+    for cpu in range(16):
+        cache = f"/sys/devices/system/cpu/cpu{cpu}/cache/index3"
+        write(cache + "/level", "3")
+        write(cache + "/type", "Unified")
+        write(cache + "/shared_cpu_list", "0-7" if cpu < 8 else "8-15")
+    assert placement.validate_config()["WORKER_CPUS"] == [0, 2]
+    monkeypatch.setenv("WORKER_POOL_CPUS", "0,2,4,8")
+    with pytest.raises(ValueError, match="cluster"):
+        placement.validate_config()
+
+
 @pytest.fixture
 def linux(tmp_path, monkeypatch):
     def mapped(value):
@@ -138,6 +152,21 @@ def test_only_owned_tree_bound_and_later_threads_checked(linux, tmp_path):
     masks[122] = {4}
     with pytest.raises(RuntimeError, match="affinity"):
         placement.audit(100, identity, False)
+
+
+def test_api_and_engine_are_bound_to_separate_cores(linux, tmp_path, monkeypatch):
+    _, masks, _ = linux
+    monkeypatch.setenv("SERVICE_CPUS", "8,10")
+    monkeypatch.setenv("API_CPUS", "8")
+    monkeypatch.setenv("ENGINE_CPUS", "10")
+    monkeypatch.setenv("CLIENT_CPUS", "12")
+    placement.validate_config()
+    identity = tmp_path / "identity.json"
+    placement.audit(100, identity, True)
+    assert masks[100] == {8}
+    assert masks[110] == {10}
+    assert masks[120] == {0, 2}
+    placement.audit(100, identity, False)
 
 
 def test_restart_or_configuration_change_requires_new_service(
