@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 
 from topdown import probe
 from topdown.profiles import zen4
-from topdown.runner import collect, load_groups, validate_platform
+from topdown.runner import collect, collect_raw, load_groups, validate_platform
 
 
 CPUINFO = "vendor_id : AuthenticAMD\ncpu family : 25\nmodel : 17\n"
@@ -234,6 +234,18 @@ def test_standalone_collection_and_multiplex_rejection(
     assert result["frequency_semantics"] == zen4.FREQUENCY_NOTE
     assert sheet.cell(labels["Backend Memory (estimate)"].row, 1).alignment.indent == 1
     book.close()
+
+    raw_only = tmp_path / "raw_only"
+    raw_result = collect_raw(["python", "workload.py"], raw_only, "zen4", 0, 1)
+    assert raw_result["status"] == "collected" and raw_result["stages"] == ["work"]
+    assert not (raw_only / "Topdown.xlsx").exists()
+
+    split_raw, split_report = tmp_path / "split_raw", tmp_path / "split_report"
+    collect(["python", "workload.py"], split_raw, "zen4", 0, 1,
+            analysis_output=split_report)
+    assert not (split_raw / "summary.csv").exists()
+    assert (split_report / "summary.csv").read_bytes() == (root / "summary.csv").read_bytes()
+    assert (split_report / "Topdown.xlsx").is_file()
 
     multiplex = True
     with pytest.raises(RuntimeError, match="multiplex"):

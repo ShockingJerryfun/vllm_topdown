@@ -46,7 +46,7 @@ def validate_platform(profile: str, system: str, machine: str, cpuinfo: str) -> 
         raise RuntimeError("The Zen 4 profile requires an AMD Zen 4 family 19h CPU")
 
 
-def collect(
+def collect_raw(
     command: list[str], root: Path, profile: str, discard: int, expected: int | None
 ) -> dict:
     if not command:
@@ -137,8 +137,22 @@ def collect(
         writer = csv.writer(stream)
         writer.writerow(["group", "stage", "raw", "selected", "status"])
         writer.writerows(quality)
-    write_summary(root, stages, profile)
+    metadata["stages"] = stages
     metadata["finished_ns"] = time.time_ns()
+    metadata["status"] = "collected"
+    (root / "run.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return metadata
+
+
+def collect(
+    command: list[str], root: Path, profile: str, discard: int, expected: int | None,
+    *, analysis_output: Path | None = None,
+) -> dict:
+    """Collect regions and create the existing report in the selected directory."""
+    metadata = collect_raw(command, root, profile, discard, expected)
+    write_summary(root, metadata["stages"], profile, analysis_output)
     metadata["status"] = "complete"
     (root / "run.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
