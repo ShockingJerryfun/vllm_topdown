@@ -1,0 +1,60 @@
+{
+  "groups": [
+    {
+      "name": "slots",
+      "suffix": "SLOTS",
+      "events": ["0x76", "0x1000001a0", "0x100001ea0", "0x1000060a0", "0x7aa"],
+      "event_headers": ["0x76 (cycles)", "0x1000001a0 (frontend slots)", "0x100001ea0 (backend slots)", "0x1000060a0 (SMT contention slots)", "0x7aa (dispatched ops)"],
+      "derived": []
+    },
+    {
+      "name": "retiring",
+      "suffix": "RETIRING",
+      "events": ["0x76", "0x7aa", "0xc1", "0x1000000c2", "0xc0"],
+      "event_headers": ["0x76 (cycles)", "0x7aa (dispatched ops)", "0xc1 (retired ops)", "0x1000000c2 (microcode ops)", "0xc0 (instructions)"],
+      "derived": []
+    },
+    {
+      "name": "frontend",
+      "suffix": "FRONTEND",
+      "events": ["0x76", "0x1000001a0", "0x1060001a0"],
+      "event_headers": ["0x76 (cycles)", "0x1000001a0 (frontend slots)", "0x1060001a0 (frontend cmask=6)"],
+      "derived": []
+    },
+    {
+      "name": "backend",
+      "suffix": "BACKEND",
+      "events": ["0x76", "0x100001ea0", "0xa2d6", "0x2d6"],
+      "event_headers": ["0x76 (cycles)", "0x100001ea0 (backend slots)", "0xa2d6 (load not complete)", "0x2d6 (not complete)"],
+      "derived": []
+    },
+    {
+      "name": "speculation",
+      "suffix": "SPECULATION",
+      "events": ["0x76", "0x7aa", "0xc1", "0xc3", "0x96"],
+      "event_headers": ["0x76 (cycles)", "0x7aa (dispatched ops)", "0xc1 (retired ops)", "0xc3 (branch mispredicts)", "0x96 (resyncs)"],
+      "derived": []
+    },
+    {
+      "name": "l2_ratio",
+      "suffix": "L2_RATIO",
+      "events": ["0xf960", "0xff70", "0xff71", "0xff72", "0x964"],
+      "event_headers": ["0xf960 (L2 no-prefetch requests)", "0xff70 (prefetch L2 hit)", "0xff71 (prefetch L2 miss, L3 hit)", "0xff72 (prefetch L2 and L3 miss)", "0x964 (I/D L2 miss)"],
+      "derived": []
+    },
+    {
+      "name": "l2_mpki",
+      "suffix": "L2_MPKI",
+      "events": ["0xc0", "0x964", "0xff71", "0xff72"],
+      "event_headers": ["0xc0 (instructions)", "0x964 (I/D L2 miss)", "0xff71 (prefetch L2 miss, L3 hit)", "0xff72 (prefetch L2 and L3 miss)"],
+      "derived": []
+    },
+    {
+      "name": "branch",
+      "suffix": "BRANCH",
+      "events": ["0x76", "0xc0", "0xc2", "0xc3"],
+      "event_headers": ["0x76 (cycles)", "0xc0 (instructions)", "0xc2 (retired branches)", "0xc3 (retired mispredicted branches)"],
+      "derived": []
+    }
+  ]
+}

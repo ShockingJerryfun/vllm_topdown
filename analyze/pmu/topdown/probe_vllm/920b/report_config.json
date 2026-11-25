@@ -1,0 +1,739 @@
+{
+  "groups": [
+    {
+      "name": "topdown",
+      "suffix": "TOPDOWN",
+      "events": [
+        "0x0011",
+        "0x0008",
+        "0x2011",
+        "0x2012",
+        "0x001b"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0008",
+        "0x2011",
+        "0x2012",
+        "0x001b"
+      ],
+      "derived": [
+        {
+          "name": "retire",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0008}/(6*{0x0011}),\"\")"
+        },
+        {
+          "name": "frontend_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x2011}/(6*{0x0011}),\"\")"
+        },
+        {
+          "name": "fetch_latency_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x2012}/{0x0011},\"\")"
+        },
+        {
+          "name": "fetch_bandwidth_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({frontend_bound}-{fetch_latency_bound},\"\")"
+        },
+        {
+          "name": "bad_spec",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(({0x001b}-{0x0008})/(6*{0x0011}),\"\")"
+        },
+        {
+          "name": "backend_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(1-{retire}-{frontend_bound}-{bad_spec},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "flush",
+      "suffix": "FLUSH",
+      "events": [
+        "0x0011",
+        "0x0010",
+        "0x2010",
+        "0x104f",
+        "0x200f"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0010 (br_mispredict)",
+        "0x2010 (rob_flush)",
+        "0x104f (if_sp_flush)",
+        "0x200f (nuke_flush)"
+      ],
+      "derived": [
+        {
+          "name": "branch_flush",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0010}*5/{0x0011},\"\")"
+        },
+        {
+          "name": "ooo_flush",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x2010}*9/{0x0011},\"\")"
+        },
+        {
+          "name": "sp_flush",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x104f}*5/{0x0011},\"\")"
+        },
+        {
+          "name": "flush",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({branch_flush}+{ooo_flush}+{sp_flush},\"\")"
+        },
+        {
+          "name": "branch_mispredict_weight",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0010}/({0x0010}+{0x2010}),\"\")"
+        },
+        {
+          "name": "machine_clear_weight",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(1-{branch_mispredict_weight},\"\")"
+        },
+        {
+          "name": "nuke_flush",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x200f}/{0x2010},\"\")"
+        },
+        {
+          "name": "other_flush",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(1-{nuke_flush},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "badspec_branch",
+      "suffix": "BADSPEC_BR",
+      "events": [
+        "0x0010",
+        "0x1010",
+        "0x1013",
+        "0x1016",
+        "0x100d"
+      ],
+      "event_headers": [
+        "0x0010 (br_mispredict)",
+        "0x1010 (indirect)",
+        "0x1013 (blr)",
+        "0x1016 (bl)",
+        "0x100d (ret)"
+      ],
+      "derived": [
+        {
+          "name": "indirect_branch",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x1010}/{0x0010},\"\")"
+        },
+        {
+          "name": "push_branch",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(({0x1013}+{0x1016})/{0x0010},\"\")"
+        },
+        {
+          "name": "pop_branch",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x100d}/{0x0010},\"\")"
+        },
+        {
+          "name": "other_branch",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(({0x0010}-{0x1013}-{0x1016}-{0x100d})/{0x0010},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "backend_core",
+      "suffix": "BACKEND_CORE",
+      "events": [
+        "0x0011",
+        "0x7001",
+        "0x7002",
+        "0x7003",
+        "0x7004"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x7001 (exe_stall_cycle)",
+        "0x7002 (fdiv_fsqrt_stall)",
+        "0x7003 (exe_stall_div)",
+        "0x7004 (fsu_stall)"
+      ],
+      "derived": [
+        {
+          "name": "exe_stall",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x7001}/{0x0011},\"\")"
+        },
+        {
+          "name": "fdiv_stall",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x7002}/{0x0011},\"\")"
+        },
+        {
+          "name": "div_stall",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x7003}/{0x0011},\"\")"
+        },
+        {
+          "name": "fsu_stall",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x7004}/{0x0011},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "backend_memory",
+      "suffix": "BACKEND_MEM",
+      "events": [
+        "0x0011",
+        "0x7005",
+        "0x7006",
+        "0x7007",
+        "0x7008",
+        "0x7009"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x7005 (memstall_anyload)",
+        "0x7006 (memstall_store)",
+        "0x7007 (memstall_l1miss)",
+        "0x7008 (memstall_l2miss)",
+        "0x7009 (raw diagnostic; 920B L3/DRAM split unconfirmed)"
+      ],
+      "derived": [
+        {
+          "name": "memory_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(({0x7005}+{0x7006})/{0x0011},\"\")"
+        },
+        {
+          "name": "l1_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(({0x7005}-{0x7007})/{0x0011},\"\")"
+        },
+        {
+          "name": "l2_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(({0x7007}-{0x7008})/{0x0011},\"\")"
+        },
+        {
+          "name": "l3_or_dram_wait",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x7008}/{0x0011},\"\")"
+        },
+        {
+          "name": "store_bound",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x7006}/{0x0011},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "icache",
+      "suffix": "ICACHE",
+      "events": [
+        "0x0008",
+        "0x0001",
+        "0x0014",
+        "0x0027",
+        "0x0028",
+        "0x0011"
+      ],
+      "derived": [
+        {
+          "name": "l1i_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0001}/{0x0014},\"\")"
+        },
+        {
+          "name": "l1i_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x0001}/{0x0008}*1000,\"\")"
+        },
+        {
+          "name": "l2i_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0028}/{0x0027},\"\")"
+        },
+        {
+          "name": "l2i_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x0028}/{0x0008}*1000,\"\")"
+        },
+        {
+          "name": "idle_by_icache_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR((({0x0027}-{0x0028})*15+{0x0028}*100)/{0x0011},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "dcache",
+      "suffix": "DCACHE",
+      "events": [
+        "0x0008",
+        "0x0003",
+        "0x0004",
+        "0x0017",
+        "0x0016"
+      ],
+      "derived": [
+        {
+          "name": "l1d_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0003}/{0x0004},\"\")"
+        },
+        {
+          "name": "l1d_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x0003}/{0x0008}*1000,\"\")"
+        },
+        {
+          "name": "l2d_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0017}/{0x0016},\"\")"
+        },
+        {
+          "name": "l2d_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x0017}/{0x0008}*1000,\"\")"
+        }
+      ]
+    },
+    {
+      "name": "l3",
+      "suffix": "L3",
+      "events": [
+        "0x0008",
+        "0x002a",
+        "0x002b"
+      ],
+      "derived": [
+        {
+          "name": "l3_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x002a}/{0x002b},\"\")"
+        },
+        {
+          "name": "l3_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x002a}/{0x0008}*1000,\"\")"
+        }
+      ]
+    },
+    {
+      "name": "tlb1",
+      "suffix": "TLB1",
+      "events": [
+        "0x0008",
+        "0x0002",
+        "0x0026",
+        "0x0005",
+        "0x0025"
+      ],
+      "derived": [
+        {
+          "name": "itlb_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0002}/{0x0026},\"\")"
+        },
+        {
+          "name": "itlb_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x0002}/{0x0008}*1000,\"\")"
+        },
+        {
+          "name": "dtlb_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0005}/{0x0025},\"\")"
+        },
+        {
+          "name": "dtlb_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x0005}/{0x0008}*1000,\"\")"
+        }
+      ]
+    },
+    {
+      "name": "tlb2",
+      "suffix": "TLB2",
+      "events": [
+        "0x0008",
+        "0x002d",
+        "0x002e",
+        "0x002f",
+        "0x0030",
+        "0x0011"
+      ],
+      "derived": [
+        {
+          "name": "stlb_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(({0x002d}+{0x002e})/({0x002f}+{0x0030}),\"\")"
+        },
+        {
+          "name": "stlb_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR(({0x002d}+{0x002e})/{0x0008}*1000,\"\")"
+        },
+        {
+          "name": "idle_by_itlb_miss",
+          "number_format": "0.00%",
+          "formula": "=IFERROR((({0x0030}-{0x002e})*15+{0x002e}*100)/{0x0011},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "branch",
+      "suffix": "BRANCH",
+      "events": [
+        "0x0008",
+        "0x0021",
+        "0x0022"
+      ],
+      "derived": [
+        {
+          "name": "br_missrate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0022}/{0x0021},\"\")"
+        },
+        {
+          "name": "br_mpki",
+          "number_format": "0.00",
+          "formula": "=IFERROR({0x0022}/{0x0008}*1000,\"\")"
+        }
+      ]
+    },
+    {
+      "name": "imix",
+      "suffix": "IMIX",
+      "events": [
+        "0x001b",
+        "0x0070",
+        "0x0073",
+        "0x8005",
+        "0x0078"
+      ],
+      "semantic_headers": [
+        "inst_spec",
+        "ld_spec",
+        "dp_spec",
+        "ase_spec",
+        "br_imm_spec"
+      ],
+      "derived": [
+        {
+          "name": "ld_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0070}/{0x001b},\"\")"
+        },
+        {
+          "name": "dp_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0073}/{0x001b},\"\")"
+        },
+        {
+          "name": "ase_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x8005}/{0x001b},\"\")"
+        },
+        {
+          "name": "br_imm_spec",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0078}/{0x001b},\"\")"
+        },
+        {
+          "name": "合计",
+          "number_format": "0.00%",
+          "formula": "=SUM({ld_imix}:{br_imm_spec})"
+        },
+        {
+          "name": "其他",
+          "number_format": "0.00%",
+          "formula": "=1-{合计}"
+        }
+      ]
+    },
+    {
+      "name": "imix2",
+      "suffix": "IMIX2",
+      "events": [
+        "0x001b",
+        "0x0071",
+        "0x0079",
+        "0x007a",
+        "0x0075",
+        "0x8006"
+      ],
+      "semantic_headers": [
+        "inst_spec",
+        "st_spec",
+        "br_ret_spec",
+        "br_ind_spec",
+        "vfp_spec",
+        "sve_spec"
+      ],
+      "derived": [
+        {
+          "name": "st_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0071}/{0x001b},\"\")"
+        },
+        {
+          "name": "br_ret_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0079}/{0x001b},\"\")"
+        },
+        {
+          "name": "br_ind_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x007a}/{0x001b},\"\")"
+        },
+        {
+          "name": "vfp_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x0075}/{0x001b},\"\")"
+        },
+        {
+          "name": "sve_imix",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x8006}/{0x001b},\"\")"
+        },
+        {
+          "name": "合计",
+          "number_format": "0.00%",
+          "formula": "=SUM({st_imix}:{sve_imix})"
+        },
+        {
+          "name": "其他",
+          "number_format": "0.00%",
+          "formula": "=1-{合计}"
+        }
+      ]
+    },
+    {
+      "name": "l1_detail_a",
+      "suffix": "L1_DETAIL_A",
+      "events": [
+        "0x0011",
+        "0x5090",
+        "0x5091",
+        "0x5092",
+        "0x5093"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x5090 (L1 DTLB)",
+        "0x5091 (L1 Misalign)",
+        "0x5092 (L1 Resource full)",
+        "0x5093 (L1 Instruction type)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "l1_detail_b",
+      "suffix": "L1_DETAIL_B",
+      "events": [
+        "0x0011",
+        "0x5094",
+        "0x5095",
+        "0x5096"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x5094 (L1 Forward hazard)",
+        "0x5095 (L1 Structure hazard)",
+        "0x5096 (L1 Pipeline)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "ports_a",
+      "suffix": "PORTS_A",
+      "events": [
+        "0x0011",
+        "0x0008",
+        "0x700a",
+        "0x700b",
+        "0x700c",
+        "0x700d"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0008 (instructions)",
+        "0x700a (0 Ports Serialize)",
+        "0x700b (0 Ports Non Serialize)",
+        "0x700c (1 Ports)",
+        "0x700d (2 Ports)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "ports_b",
+      "suffix": "PORTS_B",
+      "events": [
+        "0x0011",
+        "0x0008",
+        "0x700e",
+        "0x700f",
+        "0x7010",
+        "0x7011"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0008 (instructions)",
+        "0x700e (3 Ports)",
+        "0x700f (4 Ports)",
+        "0x7010 (5 Ports)",
+        "0x7011 (6P Ports)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "cache",
+      "suffix": "CACHE",
+      "events": [
+        "0x0011",
+        "0x0008",
+        "0x0004",
+        "0x0003",
+        "0x0039",
+        "0x0013"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0008 (instructions)",
+        "0x0004 (L1D access)",
+        "0x0003 (L1D refill)",
+        "0x0039 (L1D LMiss Read)",
+        "0x0013 (Mem Access)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "trans",
+      "suffix": "TRANS",
+      "events": [
+        "0x0011",
+        "0x0005",
+        "0x0034",
+        "0x0038",
+        "0x0019",
+        "0x0015"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0005 (DTLB refill)",
+        "0x0034 (DTLB Walk)",
+        "0x0038 (Remote Access Read)",
+        "0x0019 (Bus Access)",
+        "0x0015 (L1D Writeback)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "levels",
+      "suffix": "LEVELS",
+      "events": [
+        "0x0011",
+        "0x0008",
+        "0x0016",
+        "0x0017",
+        "0x0036",
+        "0x0037"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0008 (instructions)",
+        "0x0016 (L2D access)",
+        "0x0017 (L2D refill)",
+        "0x0036 (LLC Read)",
+        "0x0037 (LLC Read Miss)"
+      ],
+      "derived": []
+    },
+    {
+      "name": "l2_lsu_ifu",
+      "suffix": "L2_LSU_IFU",
+      "events": [
+        "0x0011",
+        "0x0008",
+        "0x6008",
+        "0x600b",
+        "0x6009",
+        "0x600c"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0008 (instructions)",
+        "0x6008 (LSU access)",
+        "0x600b (LSU hit)",
+        "0x6009 (IFU access)",
+        "0x600c (IFU hit)"
+      ],
+      "derived": [
+        {
+          "name": "lsu_hit_rate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x600b}/{0x6008},\"\")"
+        },
+        {
+          "name": "lsu_inferred_miss_rate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(1-{0x600b}/{0x6008},\"\")"
+        },
+        {
+          "name": "ifu_hit_rate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x600c}/{0x6009},\"\")"
+        },
+        {
+          "name": "ifu_inferred_miss_rate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(1-{0x600c}/{0x6009},\"\")"
+        }
+      ]
+    },
+    {
+      "name": "l2_mmu_device",
+      "suffix": "L2_MMU_DEVICE",
+      "events": [
+        "0x0011",
+        "0x0008",
+        "0x600a",
+        "0x600d",
+        "0x6010",
+        "0x6011"
+      ],
+      "event_headers": [
+        "0x0011 (cycles)",
+        "0x0008 (instructions)",
+        "0x600a (MMU access)",
+        "0x600d (MMU hit)",
+        "0x6010 (LSU device Store)",
+        "0x6011 (LSU NC Write)"
+      ],
+      "derived": [
+        {
+          "name": "mmu_hit_rate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR({0x600d}/{0x600a},\"\")"
+        },
+        {
+          "name": "mmu_inferred_miss_rate",
+          "number_format": "0.00%",
+          "formula": "=IFERROR(1-{0x600d}/{0x600a},\"\")"
+        }
+      ]
+    }
+  ]
+}

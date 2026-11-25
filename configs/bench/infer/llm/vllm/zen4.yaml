@@ -1,0 +1,53 @@
+pipeline:
+  prepare: bench/infer/llm/vllm/prepare.py
+  collect: collect/pmu/topdown/vllm/collect.py
+  analyze: analyze/pmu/topdown/vllm/analyze.py
+  cleanup: bench/infer/llm/vllm/cleanup.py
+IMAGE: vllm0.26_fj:latest
+GPU_DEVICE: 0
+CHIP: zen4
+MODEL: /home/model/Qwen3-8B-Instruct
+MODEL_SHORT: qwen3
+SERVED_MODEL: qwen3-8b
+PYTHON_BIN: /opt/vllm/bin/python3
+VLLM_BIN: /opt/vllm/bin/vllm
+PORT: '18026'
+VLLM_USE_V2_MODEL_RUNNER: '1'
+MAX_MODEL_LEN: '16384'
+MAX_NUM_SEQS: '1'
+MAX_NUM_BATCHED_TOKENS: '16384'
+TENSOR_PARALLEL_SIZE: '1'
+DATA_PARALLEL_SIZE: '1'
+DTYPE: bfloat16
+GPU_MEMORY_UTILIZATION: '0.8'
+PREFIX_CACHING_FLAG: --no-enable-prefix-caching
+SERVER_FLAGS: --no-async-scheduling
+SERVER_SEED: '0'
+RANDOM_INPUT_LEN: '7000'
+RANDOM_OUTPUT_LEN: '100'
+RANDOM_RANGE_RATIO: '0'
+NUM_PROMPTS: '1'
+NUM_WARMUPS: '0'
+MAX_CONCURRENCY: '1'
+REQUEST_RATE: '1'
+TEMPERATURE: '0'
+BENCH_SEED: '0'
+IGNORE_EOS_FLAG: --ignore-eos
+ROUND_WARMUPS: '1'
+WARMUP_SCOPE: session
+PERSISTENT_BENCH_CLIENT: '1'
+COLLECTION_PROFILE: full
+SPE_ENABLE: '0'
+FREQUENCY_ENABLE: '0'
+GROUP_START_TEMPERATURE: '0'
+HOTSPOT_SCOPE: thread
+ANON_THP_MODE: 'off'
+ZEN4_L3_ENABLE: '1'
+PLACEMENT_MODE: worker_set
+WORKER_NUMA_NODE: '1'
+WORKER_CPUS: 68,69
+WORKER_POOL_CPUS: 68,69,70,71
+SERVICE_CPUS: 64,65
+API_CPUS: '64'
+ENGINE_CPUS: '65'
+CLIENT_CPUS: '66'

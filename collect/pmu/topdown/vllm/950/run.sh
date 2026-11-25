@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+COMMON_DIR=$(dirname "$SCRIPT_DIR")
+SOURCE_ROOT=$(dirname "$COMMON_DIR")
+set -a
+source "$COMMON_DIR/config.env"
+set +a
+COLLECTION_PROFILE=${COLLECTION_PROFILE:-full}
+case "$COLLECTION_PROFILE" in full|end_to_end) ;; *) exit 2 ;; esac
+RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/950}
+"$PYTHON_BIN" -c 'import openpyxl' >/dev/null 2>&1 || {
+    printf 'Missing openpyxl; install scripts/requirements-report.txt\n' >&2
+    exit 6
+}
+[[ ${RESUME_COLLECTION:-0} == 1 || ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
+install -d -m 755 "$RUN_ROOT"
+touch "$RUN_ROOT/commands.txt"
+
+record_command() {
+    local title=$1
+    local stdout_path=$2
+    local merge_stderr=$3
+    local background=$4
+    shift 4
+    {
+        printf '[%s]\n' "$title"
+        printf '%q ' "$@"
+        if [[ -n "$stdout_path" ]]; then
+            printf '> %q' "$stdout_path"
+            [[ "$merge_stderr" == 1 ]] && printf ' 2>&1'
+        fi
+        [[ "$background" == 1 ]] && printf ' &'
+        printf '\n\n'
+    } >> "$RUN_ROOT/commands.txt"
+}
+
+if [[ -z "$VLLM_SITE" ]]; then
+    VLLM_SITE=$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')
+fi
+RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
+source "$COMMON_DIR/session.sh"
+cp -rs "$VLLM_SITE" "$RUNTIME/vllm"
+while IFS= read -r -d '' file; do
+    relative=${file#"$SOURCE_ROOT/vllm/"}
+    target="$RUNTIME/vllm/$relative"
+    mkdir -p "$(dirname "$target")"
+    ln -sfn "$file" "$target"
+done < <(find -L "$SOURCE_ROOT/vllm" -type f -print0)
+ln -s "$SOURCE_ROOT/kperf_instrument.py" "$RUNTIME/kperf_instrument.py"
+export SOURCE_ROOT VLLM_PYTHONPATH=$RUNTIME
+
+{
+    lscpu
+    printf '\nmidr_el1='
+    cat /sys/devices/system/cpu/cpu0/regs/identification/midr_el1 2>/dev/null || true
+    printf '\nperf_event_paranoid='
+    cat /proc/sys/kernel/perf_event_paranoid
+    printf 'nmi_watchdog='
+    cat /proc/sys/kernel/nmi_watchdog
+} > "$RUN_ROOT/platform.txt"
+RUNTIME_COMMAND=(
+    env
+    PYTHONPATH="$VLLM_PYTHONPATH"
+    VLLM_USE_V2_MODEL_RUNNER="$VLLM_USE_V2_MODEL_RUNNER"
+    "$PYTHON_BIN" -c
+    'import os, sys, torch, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen3; print(sys.version); print(vllm.__version__); print(torch.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen3.__file__))'
+)
+record_command "runtime identity" "$RUN_ROOT/runtime.txt" 0 0 \
+    "${RUNTIME_COMMAND[@]}"
+"${RUNTIME_COMMAND[@]}" > "$RUN_ROOT/runtime.txt"
+
+EXPECTED_CALLS=$(( RANDOM_OUTPUT_LEN - 1 ))
+PRIMARY_RUN_ROOT=$RUN_ROOT
+run_round() {
+    if [[ ${RESUME_COLLECTION:-0} == 1 ]]; then
+        local status=0
+        "$PYTHON_BIN" "$COMMON_DIR/resume.py" prepare "$RUN_ROOT/$1" || status=$?
+        [[ $status != 10 ]] || return 0
+        [[ $status == 0 ]] || return "$status"
+    fi
+    [[ -n "$SERVICE_RUNNER_PID" ]] || RUN_ROOT="$PRIMARY_RUN_ROOT" start_session
+    "$COMMON_DIR/run_one.sh" "$@"
+}
+parse_checked() { "${PARSE_COMMAND[@]}"; }
+END_TO_END_STAGE=execute_model_to_sample_tokens
+END_TO_END_ROOT="$RUN_ROOT/end_to_end"
+
+if [[ "$COLLECTION_PROFILE" == full ]]; then
+RUN_ROOT="$RUN_ROOT" run_round time
+PARSE_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/time"
+    --mode time
+    --expected-calls "$EXPECTED_CALLS"
+)
+record_command "time parse" "" 0 0 "${PARSE_COMMAND[@]}"
+parse_checked
+
+while IFS='|' read -r label codes; do
+    RUN_ROOT="$RUN_ROOT" run_round "$label" "$codes" "$codes"
+    PARSE_COMMAND=(
+        "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label"
+        --event-names "$codes"
+        --expected-calls "$EXPECTED_CALLS"
+    )
+    record_command "$label parse" "" 0 0 "${PARSE_COMMAND[@]}"
+    parse_checked
+done <<EOF
+topdown|$EVENTS_950_TOPDOWN
+frontend_detail|$EVENTS_950_FRONTEND_DETAIL
+badspec_branch|$EVENTS_950_BADSPEC_BRANCH
+backend_core|$EVENTS_950_BACKEND_CORE
+backend_memory|$EVENTS_950_BACKEND_MEMORY
+icache|$EVENTS_950_ICACHE
+dcache|$EVENTS_950_DCACHE
+l3|$EVENTS_950_L3
+tlb1|$EVENTS_950_TLB1
+tlb2|$EVENTS_950_TLB2
+branch|$EVENTS_950_BRANCH
+imix|$EVENTS_950_IMIX
+imix2|$EVENTS_950_IMIX2
+EOF
+
+fi
+printf '%s\n' "$COLLECTION_PROFILE" > "$RUN_ROOT/collection_profile"
+
+install -d -m 755 "$END_TO_END_ROOT"
+touch "$END_TO_END_ROOT/commands.txt"
+KPERF_TARGET="$END_TO_END_STAGE" KPERF_QUALIFIER=run_fullgraph \
+    RUN_ROOT="$END_TO_END_ROOT" run_round time
+PARSE_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$END_TO_END_ROOT/time"
+    --mode time
+    --profile end_to_end
+    --expected-calls "$EXPECTED_CALLS"
+)
+record_command "end-to-end time parse" "" 0 0 "${PARSE_COMMAND[@]}"
+parse_checked
+
+while IFS='|' read -r label codes; do
+    KPERF_TARGET="$END_TO_END_STAGE" KPERF_QUALIFIER=run_fullgraph \
+        RUN_ROOT="$END_TO_END_ROOT" \
+        run_round "$label" "$codes" "$codes"
+    PARSE_COMMAND=(
+        "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$END_TO_END_ROOT/$label"
+        --event-names "$codes"
+        --profile end_to_end
+        --expected-calls "$EXPECTED_CALLS"
+    )
+    record_command "end-to-end $label parse" "" 0 0 "${PARSE_COMMAND[@]}"
+    parse_checked
+done <<EOF
+topdown|$EVENTS_950_TOPDOWN
+frontend_detail|$EVENTS_950_FRONTEND_DETAIL
+badspec_branch|$EVENTS_950_BADSPEC_BRANCH
+backend_core|$EVENTS_950_BACKEND_CORE
+backend_memory|$EVENTS_950_BACKEND_MEMORY
+icache|$EVENTS_950_ICACHE
+dcache|$EVENTS_950_DCACHE
+l3|$EVENTS_950_L3
+tlb1|$EVENTS_950_TLB1
+tlb2|$EVENTS_950_TLB2
+branch|$EVENTS_950_BRANCH
+imix|$EVENTS_950_IMIX
+imix2|$EVENTS_950_IMIX2
+EOF
+
+if [[ "$COLLECTION_PROFILE" == full ]]; then
+    RUN_ROOT="$RUN_ROOT" run_round hotspot
+fi
+if [[ ${FREQUENCY_ENABLE:-0} == 1 ]]; then
+    RUN_ROOT="$RUN_ROOT" run_round frequency
+fi
+stop_session
+if [[ ${INFRAPERF_COLLECT_ONLY:-0} == 1 ]]; then exit 0; fi
+SUMMARY_COMMAND=("$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT")
+record_command "summary" "" 0 0 "${SUMMARY_COMMAND[@]}"
+"${SUMMARY_COMMAND[@]}"
+
+BUILD_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/build_xlsx.py" "$RUN_ROOT"
+    --config "$SCRIPT_DIR/report_config.json"
+    --chip "$(basename "$SCRIPT_DIR")"
+    --version "$VLLM_VERSION_SHORT"
+    --model-short "$MODEL_SHORT"
+    --input-len "$RANDOM_INPUT_LEN"
+    --output-len "$RANDOM_OUTPUT_LEN"
+    --compact-report
+    --include-end-to-end
+)
+[[ ${SPE_ENABLE:-0} != 1 ]] || BUILD_COMMAND+=(--defer-spe)
+record_command "Excel report" "" 0 0 "${BUILD_COMMAND[@]}"
+"${BUILD_COMMAND[@]}"
+printf '[950] completed: %s\n' "$RUN_ROOT"

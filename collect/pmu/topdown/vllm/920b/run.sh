@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+COMMON_DIR=$(dirname "$SCRIPT_DIR")
+SOURCE_ROOT=$(dirname "$COMMON_DIR")
+set -a
+source "$COMMON_DIR/config.env"
+set +a
+COLLECTION_PROFILE=${COLLECTION_PROFILE:-full}
+case "$COLLECTION_PROFILE" in full|end_to_end) ;; *) exit 2 ;; esac
+GROUP_SET_920B=${GROUP_SET_920B:-standard}
+case "$GROUP_SET_920B" in standard|extended) ;; *) exit 2 ;; esac
+EXTRA_GROUPS=""
+REPORT_CONFIG="$SCRIPT_DIR/report_config.json"
+if [[ "$GROUP_SET_920B" == extended ]]; then
+    EXTRA_GROUPS=$(cat <<EOF
+l1_detail_a|$EVENTS_920B_L1_DETAIL_A
+l1_detail_b|$EVENTS_920B_L1_DETAIL_B
+ports_a|$EVENTS_920B_PORTS_A
+ports_b|$EVENTS_920B_PORTS_B
+cache|$EVENTS_920B_CACHE
+trans|$EVENTS_920B_TRANS
+levels|$EVENTS_920B_LEVELS
+l2_lsu_ifu|$EVENTS_920B_L2_LSU_IFU
+l2_mmu_device|$EVENTS_920B_L2_MMU_DEVICE
+EOF
+    )
+    REPORT_CONFIG="$SCRIPT_DIR/report_config_extended.json"
+fi
+RUN_ROOT=${RUN_ROOT:-$SOURCE_ROOT/results/920b}
+"$PYTHON_BIN" -c 'import openpyxl' >/dev/null 2>&1 || {
+    printf 'Missing openpyxl; install scripts/requirements-report.txt\n' >&2
+    exit 6
+}
+[[ ! -e "$RUN_ROOT" ]] || { printf 'Exists: %s\n' "$RUN_ROOT" >&2; exit 2; }
+install -d -m 755 "$RUN_ROOT"
+printf '%s\n' "$GROUP_SET_920B" > "$RUN_ROOT/pmu_groups.txt"
+: > "$RUN_ROOT/commands.txt"
+
+record_command() {
+    local title=$1
+    local stdout_path=$2
+    local merge_stderr=$3
+    local background=$4
+    shift 4
+    {
+        printf '[%s]\n' "$title"
+        printf '%q ' "$@"
+        if [[ -n "$stdout_path" ]]; then
+            printf '> %q' "$stdout_path"
+            [[ "$merge_stderr" == 1 ]] && printf ' 2>&1'
+        fi
+        [[ "$background" == 1 ]] && printf ' &'
+        printf '\n\n'
+    } >> "$RUN_ROOT/commands.txt"
+}
+
+if [[ -z "$VLLM_SITE" ]]; then
+    VLLM_SITE=$("$PYTHON_BIN" -c 'import importlib.util; print(next(iter(importlib.util.find_spec("vllm").submodule_search_locations)))')
+fi
+RUNTIME=$(mktemp -d /tmp/vllm.XXXXXX)
+source "$COMMON_DIR/session.sh"
+cp -rs "$VLLM_SITE" "$RUNTIME/vllm"
+while IFS= read -r -d '' file; do
+    relative=${file#"$SOURCE_ROOT/vllm/"}
+    target="$RUNTIME/vllm/$relative"
+    mkdir -p "$(dirname "$target")"
+    ln -sfn "$file" "$target"
+done < <(find -L "$SOURCE_ROOT/vllm" -type f -print0)
+ln -s "$SOURCE_ROOT/kperf_instrument.py" "$RUNTIME/kperf_instrument.py"
+export SOURCE_ROOT VLLM_PYTHONPATH=$RUNTIME
+
+RUNTIME_COMMAND=(
+    env
+    PYTHONPATH="$VLLM_PYTHONPATH"
+    VLLM_USE_V2_MODEL_RUNNER="$VLLM_USE_V2_MODEL_RUNNER"
+    "$PYTHON_BIN" -c
+    'import os, sys, torch, vllm; from vllm.v1.worker.gpu import model_runner; from vllm.model_executor.models import qwen3; print(sys.version); print(vllm.__version__); print(torch.__version__); print(os.path.realpath(vllm.__file__)); print(os.path.realpath(model_runner.__file__)); print(os.path.realpath(qwen3.__file__))'
+)
+record_command "runtime identity" "$RUN_ROOT/runtime.txt" 0 0 \
+    "${RUNTIME_COMMAND[@]}"
+"${RUNTIME_COMMAND[@]}" > "$RUN_ROOT/runtime.txt"
+
+EXPECTED_CALLS=$(( RANDOM_OUTPUT_LEN - 1 ))
+start_session
+END_TO_END_STAGE=execute_model_to_sample_tokens
+END_TO_END_ROOT="$RUN_ROOT/end_to_end"
+
+if [[ "$GROUP_SET_920B" == extended ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" benchmark_before
+fi
+if [[ "$COLLECTION_PROFILE" == full ]]; then
+RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" time
+PARSE_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/time"
+    --mode time
+    --expected-calls "$EXPECTED_CALLS"
+)
+record_command "time parse" "" 0 0 "${PARSE_COMMAND[@]}"
+"${PARSE_COMMAND[@]}"
+
+while IFS='|' read -r label codes; do
+    [[ -n "$label" ]] || continue
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
+    PARSE_COMMAND=(
+        "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$RUN_ROOT/$label"
+        --event-names "$codes"
+        --expected-calls "$EXPECTED_CALLS"
+    )
+    record_command "$label parse" "" 0 0 "${PARSE_COMMAND[@]}"
+    "${PARSE_COMMAND[@]}"
+done <<EOF
+topdown|$EVENTS_920B_TOPDOWN
+flush|$EVENTS_920B_FLUSH
+badspec_branch|$EVENTS_920B_BADSPEC_BRANCH
+backend_core|$EVENTS_920B_BACKEND_CORE
+backend_memory|$EVENTS_920B_BACKEND_MEMORY
+icache|$EVENTS_920B_ICACHE
+dcache|$EVENTS_920B_DCACHE
+l3|$EVENTS_920B_L3
+tlb1|$EVENTS_920B_TLB1
+tlb2|$EVENTS_920B_TLB2
+branch|$EVENTS_920B_BRANCH
+imix|$EVENTS_920B_IMIX
+imix2|$EVENTS_920B_IMIX2
+$EXTRA_GROUPS
+EOF
+
+fi
+printf '%s\n' "$COLLECTION_PROFILE" > "$RUN_ROOT/collection_profile"
+
+install -d -m 755 "$END_TO_END_ROOT"
+: > "$END_TO_END_ROOT/commands.txt"
+KPERF_TARGET="$END_TO_END_STAGE" KPERF_QUALIFIER=run_fullgraph \
+    RUN_ROOT="$END_TO_END_ROOT" "$COMMON_DIR/run_one.sh" time
+PARSE_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$END_TO_END_ROOT/time"
+    --mode time
+    --profile end_to_end
+    --expected-calls "$EXPECTED_CALLS"
+)
+record_command "end-to-end time parse" "" 0 0 "${PARSE_COMMAND[@]}"
+"${PARSE_COMMAND[@]}"
+
+while IFS='|' read -r label codes; do
+    [[ -n "$label" ]] || continue
+    KPERF_TARGET="$END_TO_END_STAGE" KPERF_QUALIFIER=run_fullgraph \
+        RUN_ROOT="$END_TO_END_ROOT" \
+        "$COMMON_DIR/run_one.sh" "$label" "$codes" "$codes"
+    PARSE_COMMAND=(
+        "$PYTHON_BIN" "$COMMON_DIR/parse_run.py" "$END_TO_END_ROOT/$label"
+        --event-names "$codes"
+        --profile end_to_end
+        --expected-calls "$EXPECTED_CALLS"
+    )
+    record_command "end-to-end $label parse" "" 0 0 "${PARSE_COMMAND[@]}"
+    "${PARSE_COMMAND[@]}"
+done <<EOF
+topdown|$EVENTS_920B_TOPDOWN
+flush|$EVENTS_920B_FLUSH
+badspec_branch|$EVENTS_920B_BADSPEC_BRANCH
+backend_core|$EVENTS_920B_BACKEND_CORE
+backend_memory|$EVENTS_920B_BACKEND_MEMORY
+icache|$EVENTS_920B_ICACHE
+dcache|$EVENTS_920B_DCACHE
+l3|$EVENTS_920B_L3
+tlb1|$EVENTS_920B_TLB1
+tlb2|$EVENTS_920B_TLB2
+branch|$EVENTS_920B_BRANCH
+imix|$EVENTS_920B_IMIX
+imix2|$EVENTS_920B_IMIX2
+$EXTRA_GROUPS
+EOF
+
+if [[ "$COLLECTION_PROFILE" == full ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" hotspot
+fi
+if [[ ${FREQUENCY_ENABLE:-0} == 1 ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" frequency
+fi
+if [[ "$GROUP_SET_920B" == extended ]]; then
+    RUN_ROOT="$RUN_ROOT" "$COMMON_DIR/run_one.sh" benchmark_after
+fi
+stop_session
+if [[ ${INFRAPERF_COLLECT_ONLY:-0} == 1 ]]; then exit 0; fi
+SUMMARY_COMMAND=("$PYTHON_BIN" "$SCRIPT_DIR/summary.py" "$RUN_ROOT")
+record_command "summary" "" 0 0 "${SUMMARY_COMMAND[@]}"
+"${SUMMARY_COMMAND[@]}"
+
+BUILD_COMMAND=(
+    "$PYTHON_BIN" "$COMMON_DIR/build_xlsx.py" "$RUN_ROOT"
+    --config "$REPORT_CONFIG"
+    --chip "$(basename "$SCRIPT_DIR")"
+    --version "$VLLM_VERSION_SHORT"
+    --model-short "$MODEL_SHORT"
+    --input-len "$RANDOM_INPUT_LEN"
+    --output-len "$RANDOM_OUTPUT_LEN"
+    --compact-report
+    --include-end-to-end
+)
+record_command "Excel report" "" 0 0 "${BUILD_COMMAND[@]}"
+"${BUILD_COMMAND[@]}"
