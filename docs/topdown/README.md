@@ -19,6 +19,8 @@ python3 common/runners/run.py configs/bench/infer/llm/vllm/local.yaml
 
 Zen 4 使用 `zen4.yaml`；950、海光可从 920B 示例调整 `CHIP` 和环境。920B 示例采集父阶段、八阶段、22 组 PMU、热点和 Benchmark；SPE 默认关闭。
 
+需要 SPE 时将 `SPE_ENABLE` 设为 `1`，并配置 `HOST_PYTHON`、`EXPERIMENT_LOCK`、`SUBREAPER_BIN` 和 `SPE_BINARY_CACHE`。
+
 脚本创建本次专用容器并在结束后关闭。每次生成独立 `run_id`：
 
 | 目录 | 内容 |

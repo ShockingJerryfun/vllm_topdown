@@ -1,6 +1,6 @@
 # SPE offline contract
 
-The normal collection entry automatically appends the `SPE` instruction sheet.
+With `SPE_ENABLE=1`, collection appends the `SPE` instruction sheet.
 Latency columns show only means: TOT, ISSUE, TOT−ISSUE and XLAT (cycles).
 TOT−ISSUE averages paired counters from each sample, excluding missing pairs;
 it is not pure memory-service latency. PA shows the three most frequent exact
@@ -12,19 +12,19 @@ are decoded using the Linux perf
 [HiSilicon mapping](https://code.googlesource.com/linux/torvalds/linux/+/4bf54e47525dcacd4c6cdd97fb5902592414dd7a/tools/perf/util/arm-spe.c).
 Unknown CPU identities/codes and non-Load operations retain their raw code;
 missing packets are explicitly unknown, never L1. Historical captures without
-MIDRs still export raw codes. No new command or configuration switch is needed.
+MIDRs still export raw codes. See the Topdown README for the SPE configuration.
 
-Run with the existing Python environment, either as a module from the task root or
-as `python scripts/spe/decode.py --run-dir RUN/spe` after bundling these sibling
-modules. The decoder never accesses SSH, GPUs, `/proc`, or live device registers.
+Run with the existing Python environment using
+`bash analyze/pmu/topdown/spe/decode.sh --run-dir RUN/spe`. The decoder never
+accesses SSH, GPUs, `/proc`, or live device registers.
 
 The fast offline path validates all AUX packets in a native scan, then materializes
 only selected records with the reference Python decoder. Build the helper on the
 machine doing the decoding and pass it explicitly:
 
 ```sh
-cc -O3 -std=c11 -Wall -Wextra -Werror -shared -fPIC fast_scan.c -o fast_scan.so
-python decode.py --run-dir RUN/spe --native-library ./fast_scan.so
+cc -O3 -std=c11 -Wall -Wextra -Werror -shared -fPIC analyze/pmu/topdown/spe/fast_scan.c -o /tmp/fast_scan.so
+bash analyze/pmu/topdown/spe/decode.sh --run-dir RUN/spe --native-library /tmp/fast_scan.so
 ```
 
 For new standalone captures, `capture.py --skip-perf-dumps --raw-retention selected`
