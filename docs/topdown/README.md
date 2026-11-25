@@ -36,3 +36,5 @@ Excel 保留原 Topdown、Hotspot 样式；启用 SPE 时保留 SPE 页。各组
 通用打点入口位于 `collect/pmu/topdown/`，在被测线程使用 `from topdown import measure` 标记区间。将仓库和 `collect/pmu` 加入 `PYTHONPATH`，通过 `python -m topdown` 运行；920B 和 Zen 4 的事件组分别配置。
 
 vLLM 的独立采集适配入口为 `bench/infer/llm/vllm/run_probe.sh`，使用 `configs/bench/infer/llm/vllm/probe.env.example` 配置。
+
+Topdown 相关代码遵循 [Apache 2.0](LICENSE)。
