@@ -246,6 +246,13 @@ def test_standalone_collection_and_multiplex_rejection(
     assert not (split_raw / "summary.csv").exists()
     assert (split_report / "summary.csv").read_bytes() == (root / "summary.csv").read_bytes()
     assert (split_report / "Topdown.xlsx").is_file()
+    with (split_report / "metrics.csv").open(encoding="utf-8", newline="") as stream:
+        metrics = {row["metric"]: row for row in csv.DictReader(stream)}
+    assert metrics["SMTContention"]["unit"] == "pct"
+    assert float(metrics["SMTContention"]["value"]) == pytest.approx(
+        labels["SMTContention"].value * 100
+    )
+    assert metrics["L1 Bound"]["status"] == "not_collected"
 
     multiplex = True
     with pytest.raises(RuntimeError, match="multiplex"):

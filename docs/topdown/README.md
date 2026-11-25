@@ -45,6 +45,8 @@ python3 -m topdown --profile 920b \
   -- python3 bench/system/cpu_workload.py
 ```
 
+分析目录包含 Excel、原有汇总以及符合公共 schema 的 `metrics.csv` 和 `metrics.json`。
+
 vLLM 的独立采集适配入口为 `bench/infer/llm/vllm/run_probe.sh`，使用 `configs/bench/infer/llm/vllm/probe.env.example` 配置。
 
 Topdown 相关代码遵循 [Apache 2.0](LICENSE)。
