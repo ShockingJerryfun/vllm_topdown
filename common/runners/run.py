@@ -38,11 +38,12 @@ def run(config_path: Path) -> str:
         try:
             for step in ("prepare", "collect", "analyze"):
                 LOGGER.info("%s: %s", run_id, step)
-                subprocess.run([sys.executable, str(ROOT / pipeline[step])],
-                               env=env, check=True)
+                module = ".".join(Path(pipeline[step]).with_suffix("").parts)
+                subprocess.run([sys.executable, "-m", module], env=env, check=True)
         finally:
+            module = ".".join(Path(pipeline["cleanup"]).with_suffix("").parts)
             cleanup = subprocess.run(
-                [sys.executable, str(ROOT / pipeline["cleanup"])], env=env, check=False
+                [sys.executable, "-m", module], env=env, check=False
             )
             if cleanup.returncode:
                 raise RuntimeError(f"Cleanup failed for {run_id}")

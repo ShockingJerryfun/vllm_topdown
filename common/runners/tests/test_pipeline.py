@@ -53,6 +53,28 @@ def test_legacy_runtime_has_all_scripts_and_only_vllm_overrides(tmp_path: Path) 
     assert len(list((runtime / "vllm").rglob("*.py"))) == 7
 
 
+def test_pipeline_runs_package_named_steps(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(pipeline_runner, "ROOT", tmp_path)
+    package = tmp_path / "collect/example"
+    package.mkdir(parents=True)
+    (package / "value.py").write_text("VALUE = 'collected'\n", encoding="utf-8")
+    (package / "collect.py").write_text(
+        "import json, os\nfrom pathlib import Path\n"
+        "from collect.example.value import VALUE\n"
+        "root = Path(json.loads(Path(os.environ['INFRAPERF_CONTEXT']).read_text())['root'])\n"
+        "(root / 'value').write_text(VALUE)\n", encoding="utf-8",
+    )
+    for step in ("prepare", "analyze", "cleanup"):
+        (tmp_path / f"{step}.py").write_text("pass\n", encoding="utf-8")
+    config = tmp_path / "pipeline.yaml"
+    config.write_text(yaml.safe_dump({"pipeline": {
+        "prepare": "prepare.py", "collect": "collect/example/collect.py",
+        "analyze": "analyze.py", "cleanup": "cleanup.py",
+    }}), encoding="utf-8")
+    pipeline_runner.run(config)
+    assert (tmp_path / "value").read_text() == "collected"
+
+
 def test_results_and_metric_exports_keep_round_sources(tmp_path: Path) -> None:
     raw = tmp_path / "results/collect/pmu/r1"
     for name in ("time", "end_to_end/time", "benchmark_after", "topdown"):
